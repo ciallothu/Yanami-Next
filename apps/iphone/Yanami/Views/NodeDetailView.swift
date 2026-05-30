@@ -89,10 +89,18 @@ struct NodeDetailView: View {
                     
                     if !store.nodeDetail.loadRecords.isEmpty {
                         LoadPeakGrid(records: store.nodeDetail.loadRecords)
-                        PercentLoadChart(records: store.nodeDetail.loadRecords)
-                        NetworkLoadChart(records: store.nodeDetail.loadRecords)
-                        CountLoadChart(records: store.nodeDetail.loadRecords)
-                            .animation(store.settings.chartAnimationEnabled ? .default : nil, value: store.nodeDetail.loadRecords)
+                        PercentLoadChart(
+                            records: store.nodeDetail.loadRecords,
+                            animationEnabled: store.settings.chartAnimationEnabled
+                        )
+                        NetworkLoadChart(
+                            records: store.nodeDetail.loadRecords,
+                            animationEnabled: store.settings.chartAnimationEnabled
+                        )
+                        CountLoadChart(
+                            records: store.nodeDetail.loadRecords,
+                            animationEnabled: store.settings.chartAnimationEnabled
+                        )
                     } else {
                         Text("No load records")
                             .foregroundStyle(.secondary)
@@ -126,7 +134,10 @@ struct NodeDetailView: View {
                                 
                                 let taskRecords = store.nodeDetail.pingRecords.filter { $0.taskId == task.id }
                                 if !taskRecords.isEmpty {
-                                    PingChart(records: taskRecords)
+                                    PingChart(
+                                        records: taskRecords,
+                                        animationEnabled: store.settings.chartAnimationEnabled
+                                    )
                                         .frame(height: 100)
                                 }
                             }
@@ -220,6 +231,7 @@ private struct PeakTile: View {
 
 private struct PercentLoadChart: View {
     let records: [LoadRecord]
+    let animationEnabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -282,6 +294,7 @@ private struct PercentLoadChart: View {
                     }
                 }
             }
+            .chartAnimation(animationEnabled, value: records)
         }
         .padding(.vertical, 8)
     }
@@ -289,6 +302,7 @@ private struct PercentLoadChart: View {
 
 private struct NetworkLoadChart: View {
     let records: [LoadRecord]
+    let animationEnabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -342,6 +356,7 @@ private struct NetworkLoadChart: View {
                     }
                 }
             }
+            .chartAnimation(animationEnabled, value: records)
         }
         .padding(.vertical, 8)
     }
@@ -349,6 +364,7 @@ private struct NetworkLoadChart: View {
 
 private struct CountLoadChart: View {
     let records: [LoadRecord]
+    let animationEnabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -410,6 +426,7 @@ private struct CountLoadChart: View {
                     }
                 }
             }
+            .chartAnimation(animationEnabled, value: records)
         }
         .padding(.vertical, 8)
     }
@@ -478,6 +495,7 @@ private struct LoadPeaks {
 
 private struct PingChart: View {
     let records: [PingRecord]
+    let animationEnabled: Bool
     
     var body: some View {
         Chart {
@@ -493,6 +511,7 @@ private struct PingChart: View {
         .chartYAxis {
             AxisMarks(position: .leading)
         }
+        .chartAnimation(animationEnabled, value: records)
     }
 }
 
@@ -508,6 +527,19 @@ private func parseISO8601(_ string: String) -> Date {
     if let date = formatter.date(from: string) { return date }
     formatter.formatOptions = [.withInternetDateTime]
     return formatter.date(from: string) ?? Date()
+}
+
+private extension View {
+    @ViewBuilder
+    func chartAnimation<Value: Equatable>(_ enabled: Bool, value: Value) -> some View {
+        if enabled {
+            self.animation(.default, value: value)
+        } else {
+            self.transaction { transaction in
+                transaction.animation = nil
+            }
+        }
+    }
 }
 
 
@@ -548,7 +580,12 @@ private struct TerminalNavigationWrapper: View {
             case .guest:
                 error = "Guest mode not supported"
             case .apiKey:
-                token = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let apiKey = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if apiKey.isEmpty {
+                    error = "API Key is required"
+                } else {
+                    token = apiKey
+                }
             case .password:
                 if !server.sessionToken.isEmpty {
                     token = server.sessionToken
@@ -597,9 +634,12 @@ final class SshTerminalViewModel: ObservableObject {
     private let uuid: String
     private let server: ServerProfile
     private let token: String
+    private var urlSession: URLSession?
     private var webSocketTask: URLSessionWebSocketTask?
     private var heartbeatTimer: Timer?
     private var didSendInitialDirectory = false
+    private var isDisconnecting = false
+    private var lastTerminalSize: (cols: Int, rows: Int)?
     
     init(uuid: String, server: ServerProfile, token: String) {
         self.uuid = uuid
@@ -608,6 +648,12 @@ final class SshTerminalViewModel: ObservableObject {
     }
     
     func connect() {
+        closeConnection(sendCloseFrame: false)
+        isDisconnecting = false
+        self.isConnecting = true
+        self.isConnected = false
+        self.error = nil
+
         guard let url = buildTerminalURL() else {
             self.error = "Invalid terminal URL"
             self.isConnecting = false
@@ -632,30 +678,30 @@ final class SshTerminalViewModel: ObservableObject {
         request.setValue(buildOrigin(), forHTTPHeaderField: "Origin")
         
         let session = URLSession(configuration: .default)
-        webSocketTask = session.webSocketTask(with: request)
+        urlSession = session
+        let task = session.webSocketTask(with: request)
+        webSocketTask = task
         didSendInitialDirectory = false
-        webSocketTask?.resume()
-        
-        self.isConnecting = true
-        self.isConnected = false
-        self.error = nil
-        
-        receiveMessage()
+        task.resume()
+
+        receiveMessage(for: task)
         startHeartbeat()
     }
     
     func disconnect() {
-        heartbeatTimer?.invalidate()
-        webSocketTask?.cancel(with: .normalClosure, reason: nil)
-        didSendInitialDirectory = false
+        isDisconnecting = true
+        closeConnection(sendCloseFrame: true)
         isConnected = false
     }
     
     func sendInput(_ data: Data) {
         let message = URLSessionWebSocketTask.Message.data(data)
-        webSocketTask?.send(message) { error in
-            if let error = error {
-                print("WebSocket send error: \(error)")
+        webSocketTask?.send(message) { [weak self] error in
+            guard let error else { return }
+            Task { @MainActor in
+                guard let self, !self.isDisconnecting else { return }
+                self.isConnected = false
+                self.error = error.localizedDescription
             }
         }
     }
@@ -666,6 +712,13 @@ final class SshTerminalViewModel: ObservableObject {
     }
     
     func sendResize(cols: Int, rows: Int) {
+        let cols = max(cols, 1)
+        let rows = max(rows, 1)
+        lastTerminalSize = (cols, rows)
+        sendResizeMessage(cols: cols, rows: rows)
+    }
+
+    private func sendResizeMessage(cols: Int, rows: Int) {
         let json: [String: Any] = [
             "type": "resize",
             "cols": cols,
@@ -677,10 +730,11 @@ final class SshTerminalViewModel: ObservableObject {
         }
     }
     
-    private func receiveMessage() {
-        webSocketTask?.receive { [weak self] result in
+    private func receiveMessage(for task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
             guard let self = self else { return }
             Task { @MainActor in
+                guard self.webSocketTask === task else { return }
                 switch result {
                 case .success(let message):
                     switch message {
@@ -691,10 +745,13 @@ final class SshTerminalViewModel: ObservableObject {
                     @unknown default:
                         break
                     }
-                    self.receiveMessage()
+                    self.receiveMessage(for: task)
                 case .failure(let error):
                     self.isConnected = false
-                    self.error = error.localizedDescription
+                    if !self.isDisconnecting {
+                        self.error = error.localizedDescription
+                        self.isConnecting = false
+                    }
                 }
             }
         }
@@ -704,7 +761,7 @@ final class SshTerminalViewModel: ObservableObject {
         if !isConnected {
             isConnected = true
             isConnecting = false
-            sendInitialDirectoryIfNeeded()
+            sendInitialTerminalStateIfNeeded()
         }
         if let data = text.data(using: .utf8), !looksLikeControlMessage(text) {
             NotificationCenter.default.post(name: .sshTerminalOutput, object: data)
@@ -715,12 +772,19 @@ final class SshTerminalViewModel: ObservableObject {
         if !isConnected {
             isConnected = true
             isConnecting = false
-            sendInitialDirectoryIfNeeded()
+            sendInitialTerminalStateIfNeeded()
         }
         // This will be forwarded to the WebView
         NotificationCenter.default.post(name: .sshTerminalOutput, object: data)
     }
     
+    private func sendInitialTerminalStateIfNeeded() {
+        if let lastTerminalSize {
+            sendResizeMessage(cols: lastTerminalSize.cols, rows: lastTerminalSize.rows)
+        }
+        sendInitialDirectoryIfNeeded()
+    }
+
     private func sendInitialDirectoryIfNeeded() {
         guard !didSendInitialDirectory else { return }
         didSendInitialDirectory = true
@@ -731,6 +795,7 @@ final class SshTerminalViewModel: ObservableObject {
         heartbeatTimer?.invalidate()
         heartbeatTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                guard self?.isConnected == true else { return }
                 let json = ["type": "heartbeat"]
                 if let data = try? JSONSerialization.data(withJSONObject: json),
                    let text = String(data: data, encoding: .utf8) {
@@ -779,6 +844,20 @@ final class SshTerminalViewModel: ObservableObject {
         return trimmed.contains("\"type\"") &&
             (trimmed.contains("heartbeat") || trimmed.contains("resize") || trimmed.contains("ping"))
     }
+
+    private func closeConnection(sendCloseFrame: Bool) {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
+        if sendCloseFrame {
+            webSocketTask?.cancel(with: .normalClosure, reason: nil)
+        } else {
+            webSocketTask?.cancel()
+        }
+        webSocketTask = nil
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
+        didSendInitialDirectory = false
+    }
 }
 
 extension NSNotification.Name {
@@ -794,29 +873,33 @@ struct SshTerminalView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            if viewModel.isConnecting {
-                VStack {
-                    ProgressView()
-                    Text("Connecting to terminal...")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = viewModel.error {
-                VStack {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundColor(.red)
-                    Text(error)
-                        .padding()
-                    Button("Retry") {
-                        viewModel.connect()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
+            ZStack {
                 TerminalWebView(viewModel: viewModel, fontSize: store.settings.terminalFontSize)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if viewModel.isConnecting {
+                    VStack {
+                        ProgressView()
+                        Text("Connecting to terminal...")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.86))
+                } else if let error = viewModel.error {
+                    VStack {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.largeTitle)
+                            .foregroundColor(.red)
+                        Text(error)
+                            .padding()
+                        Button("Retry") {
+                            viewModel.connect()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.opacity(0.86))
+                }
             }
             
             keyboardAccessoryBar
@@ -894,10 +977,17 @@ struct TerminalWebView: UIViewRepresentable {
     
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
+        let controller = config.userContentController
+        controller.add(context.coordinator, name: "terminalInput")
+        controller.add(context.coordinator, name: "terminalResize")
+        controller.add(context.coordinator, name: "terminalReady")
+
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        context.coordinator.webView = webView
         
         let html = """
         <!DOCTYPE html>
@@ -908,65 +998,231 @@ struct TerminalWebView: UIViewRepresentable {
             <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
             <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
             <style>
-                body { margin: 0; background: #000; overflow: hidden; }
+                html, body {
+                    margin: 0;
+                    height: 100%;
+                    background: #000;
+                    overflow: hidden;
+                    touch-action: manipulation;
+                    -webkit-user-select: none;
+                    user-select: none;
+                }
                 #terminal { height: 100vh; width: 100vw; }
+                #terminal-input {
+                    position: fixed;
+                    left: 0;
+                    top: 0;
+                    width: 2px;
+                    height: 2px;
+                    opacity: 0.01;
+                    color: transparent;
+                    caret-color: transparent;
+                    background: transparent;
+                    border: 0;
+                    outline: none;
+                    padding: 0;
+                    resize: none;
+                    pointer-events: none;
+                }
             </style>
         </head>
         <body>
             <div id="terminal"></div>
+            <textarea
+                id="terminal-input"
+                autocapitalize="off"
+                autocomplete="off"
+                autocorrect="off"
+                spellcheck="false"
+                enterkeyhint="enter"
+                inputmode="text"
+                aria-hidden="true"></textarea>
             <script>
+                const terminalElement = document.getElementById('terminal');
+                const inputCapture = document.getElementById('terminal-input');
+                const useIOSInputCapture =
+                    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+                const ESC = String.fromCharCode(27);
+                const CR = String.fromCharCode(13);
+                const TAB = String.fromCharCode(9);
+                const DEL = String.fromCharCode(127);
+
                 const term = new Terminal({
                     cursorBlink: true,
                     fontSize: \(fontSize),
                     fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-                    theme: { background: '#000' }
+                    scrollback: 1000,
+                    disableStdin: useIOSInputCapture,
+                    theme: {
+                        background: '#000',
+                        foreground: '#f2f2f2'
+                    }
                 });
                 const fitAddon = new FitAddon.FitAddon();
                 term.loadAddon(fitAddon);
-                term.open(document.getElementById('terminal'));
-                
-                // Initial fit and report
-                setTimeout(() => {
+                term.open(terminalElement);
+
+                function postInput(data) {
+                    if (!data || data.length === 0) return;
+                    window.webkit.messageHandlers.terminalInput.postMessage(data);
+                }
+
+                function fitAndReport() {
                     fitAddon.fit();
                     window.webkit.messageHandlers.terminalResize.postMessage({
                         cols: term.cols,
                         rows: term.rows
                     });
-                }, 100);
+                }
 
-                term.onData(data => {
-                    window.webkit.messageHandlers.terminalInput.postMessage(data);
-                });
+                function focusTerminalInput() {
+                    if (useIOSInputCapture) {
+                        try {
+                            inputCapture.focus({ preventScroll: true });
+                        } catch (_) {
+                            inputCapture.focus();
+                        }
+                    } else {
+                        term.focus();
+                    }
+                }
+
+                function keySequence(event) {
+                    switch (event.key) {
+                    case 'ArrowUp': return ESC + '[A';
+                    case 'ArrowDown': return ESC + '[B';
+                    case 'ArrowRight': return ESC + '[C';
+                    case 'ArrowLeft': return ESC + '[D';
+                    case 'Home': return ESC + '[H';
+                    case 'End': return ESC + '[F';
+                    case 'PageUp': return ESC + '[5~';
+                    case 'PageDown': return ESC + '[6~';
+                    case 'Insert': return ESC + '[2~';
+                    case 'Delete': return ESC + '[3~';
+                    case 'Escape': return ESC;
+                    case 'Tab': return TAB;
+                    default: return null;
+                    }
+                }
+
+                function setupIOSInputCapture() {
+                    let composing = false;
+                    inputCapture.value = '';
+
+                    inputCapture.addEventListener('compositionstart', () => {
+                        composing = true;
+                    });
+
+                    inputCapture.addEventListener('compositionend', event => {
+                        composing = false;
+                        const text = event.data || inputCapture.value;
+                        inputCapture.value = '';
+                        postInput(text);
+                    });
+
+                    inputCapture.addEventListener('beforeinput', event => {
+                        if (composing || event.isComposing || event.inputType === 'insertCompositionText') {
+                            return;
+                        }
+                        if (event.inputType === 'deleteContentBackward') {
+                            postInput(DEL);
+                            event.preventDefault();
+                            return;
+                        }
+                        if (event.inputType === 'insertLineBreak') {
+                            postInput(CR);
+                            event.preventDefault();
+                            return;
+                        }
+                        if (event.data) {
+                            postInput(event.data);
+                            event.preventDefault();
+                        }
+                    });
+
+                    inputCapture.addEventListener('input', () => {
+                        if (composing) return;
+                        if (inputCapture.value.length > 0) {
+                            postInput(inputCapture.value);
+                            inputCapture.value = '';
+                        }
+                    });
+
+                    inputCapture.addEventListener('keydown', event => {
+                        const sequence = keySequence(event);
+                        if (sequence) {
+                            postInput(sequence);
+                            event.preventDefault();
+                            return;
+                        }
+                        if ((event.ctrlKey || event.metaKey) && event.key && event.key.length === 1) {
+                            const code = event.key.toUpperCase().charCodeAt(0);
+                            if (code >= 64 && code <= 95) {
+                                postInput(String.fromCharCode(code - 64));
+                                event.preventDefault();
+                            }
+                            return;
+                        }
+                        if (event.altKey && !event.ctrlKey && !event.metaKey && event.key && event.key.length === 1) {
+                            postInput(ESC + event.key);
+                            event.preventDefault();
+                        }
+                    });
+
+                    ['touchstart', 'mousedown', 'click'].forEach(eventName => {
+                        terminalElement.addEventListener(eventName, focusTerminalInput);
+                    });
+                    document.body.addEventListener('touchstart', focusTerminalInput);
+                }
+
+                if (useIOSInputCapture) {
+                    setupIOSInputCapture();
+                } else {
+                    term.onData(postInput);
+                    terminalElement.addEventListener('mousedown', focusTerminalInput);
+                    terminalElement.addEventListener('click', focusTerminalInput);
+                }
 
                 window.addEventListener('resize', () => {
-                    fitAddon.fit();
-                    window.webkit.messageHandlers.terminalResize.postMessage({
-                        cols: term.cols,
-                        rows: term.rows
-                    });
+                    setTimeout(fitAndReport, 50);
                 });
 
-                function writeToTerminal(data) {
+                window.writeToTerminal = function(data) {
                     term.write(new Uint8Array(data));
-                }
+                };
+
+                window.setTerminalFontSize = function(size) {
+                    term.options.fontSize = size;
+                    fitAndReport();
+                };
+
+                setTimeout(() => {
+                    fitAndReport();
+                    focusTerminalInput();
+                    window.webkit.messageHandlers.terminalReady.postMessage(true);
+                }, 100);
             </script>
         </body>
         </html>
         """
         
         webView.loadHTMLString(html, baseURL: nil)
-        
-        // Setup message handlers
-        let controller = webView.configuration.userContentController
-        controller.add(context.coordinator, name: "terminalInput")
-        controller.add(context.coordinator, name: "terminalResize")
-        
-        context.coordinator.webView = webView
-        
         return webView
     }
     
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) {
+        context.coordinator.viewModel = viewModel
+        context.coordinator.updateFontSize(fontSize)
+    }
+
+    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
+        let controller = uiView.configuration.userContentController
+        controller.removeScriptMessageHandler(forName: "terminalInput")
+        controller.removeScriptMessageHandler(forName: "terminalResize")
+        controller.removeScriptMessageHandler(forName: "terminalReady")
+        coordinator.tearDown()
+    }
     
     func makeCoordinator() -> Coordinator {
         Coordinator(viewModel: viewModel)
@@ -976,6 +1232,9 @@ struct TerminalWebView: UIViewRepresentable {
         var viewModel: SshTerminalViewModel
         weak var webView: WKWebView?
         private var cancellables = Set<AnyCancellable>()
+        private var isTerminalReady = false
+        private var pendingOutput = Data()
+        private var currentFontSize: Int?
         
         init(viewModel: SshTerminalViewModel) {
             self.viewModel = viewModel
@@ -993,17 +1252,53 @@ struct TerminalWebView: UIViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             if message.name == "terminalInput", let data = message.body as? String {
                 handleInput(data)
-            } else if message.name == "terminalResize", let body = message.body as? [String: Int] {
-                viewModel.sendResize(cols: body["cols"] ?? 80, rows: body["rows"] ?? 24)
+            } else if message.name == "terminalResize", let body = message.body as? [String: Any] {
+                viewModel.sendResize(
+                    cols: Self.intValue(from: body["cols"]) ?? 80,
+                    rows: Self.intValue(from: body["rows"]) ?? 24
+                )
+            } else if message.name == "terminalReady" {
+                isTerminalReady = true
+                flushPendingOutput()
+                if let currentFontSize {
+                    evaluateJavaScript("setTerminalFontSize(\(currentFontSize))")
+                }
             }
+        }
+
+        func updateFontSize(_ fontSize: Int) {
+            guard currentFontSize != fontSize else { return }
+            currentFontSize = fontSize
+            guard isTerminalReady else { return }
+            evaluateJavaScript("setTerminalFontSize(\(fontSize))")
+        }
+
+        func tearDown() {
+            cancellables.removeAll()
+            pendingOutput.removeAll()
+            webView = nil
+        }
+
+        private static func intValue(from value: Any?) -> Int? {
+            if let int = value as? Int {
+                return int
+            }
+            if let number = value as? NSNumber {
+                return number.intValue
+            }
+            return nil
         }
         
         private func handleInput(_ input: String) {
             var finalInput = input
             if viewModel.ctrlActive {
-                if let firstChar = input.first, firstChar.isLetter {
-                    let ctrlChar = Character(UnicodeScalar(UInt32(firstChar.uppercased().unicodeScalars.first!.value) - 64)!)
-                    finalInput = String(ctrlChar)
+                if let firstChar = input.first,
+                   firstChar.isLetter,
+                   let scalar = firstChar.uppercased().unicodeScalars.first,
+                   scalar.value >= 64,
+                   scalar.value <= 95,
+                   let ctrlScalar = UnicodeScalar(scalar.value - 64) {
+                    finalInput = String(Character(ctrlScalar))
                 }
                 viewModel.ctrlActive = false
             } else if viewModel.altActive {
@@ -1014,10 +1309,28 @@ struct TerminalWebView: UIViewRepresentable {
         }
         
         private func writeToWebView(_ data: Data) {
+            guard isTerminalReady else {
+                pendingOutput.append(data)
+                return
+            }
+            evaluateTerminalWrite(data)
+        }
+
+        private func flushPendingOutput() {
+            guard !pendingOutput.isEmpty else { return }
+            evaluateTerminalWrite(pendingOutput)
+            pendingOutput.removeAll()
+        }
+
+        private func evaluateTerminalWrite(_ data: Data) {
             let bytes = [UInt8](data)
             let script = "writeToTerminal(\(bytes))"
+            evaluateJavaScript(script)
+        }
+
+        private func evaluateJavaScript(_ script: String) {
             DispatchQueue.main.async {
-                self.webView?.evaluateJavaScript(script)
+                self.webView?.evaluateJavaScript(script, completionHandler: nil)
             }
         }
     }
