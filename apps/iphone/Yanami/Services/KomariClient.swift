@@ -738,7 +738,7 @@ private struct PingTaskPayload: Decodable {
             id: id,
             name: name,
             interval: interval ?? 0,
-            sampleCount: max(total ?? 0, 0),
+            sampleCount: Swift.max(total ?? 0, 0),
             latest: latest,
             min: min,
             max: max,
