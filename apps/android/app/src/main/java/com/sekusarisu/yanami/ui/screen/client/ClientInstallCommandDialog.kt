@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.ManagedClient
 import java.net.URI
+import java.util.Base64
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,17 +56,25 @@ internal fun InstallCommandDialog(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val commandCopiedMessage =
+            stringResource(R.string.client_management_install_command_copied)
     var selectedPlatform by remember(client.uuid) { mutableStateOf(InstallPlatform.LINUX) }
     var installOptionsExpanded by remember(client.uuid) { mutableStateOf(false) }
     var installOptions by remember(client.uuid) { mutableStateOf(ClientInstallOptions()) }
-    val generatedCommand =
+    val generatedCommandResult =
             remember(client.uuid, serverBaseUrl, selectedPlatform, installOptions) {
-                generateInstallCommand(
-                        serverBaseUrl = serverBaseUrl,
-                        token = client.token,
-                        platform = selectedPlatform,
-                        options = installOptions
-                )
+                runCatching {
+                    generateInstallCommand(
+                            serverBaseUrl = serverBaseUrl,
+                            token = client.token,
+                            platform = selectedPlatform,
+                            options = installOptions
+                    )
+                }
+            }
+    val generatedCommand =
+            generatedCommandResult.getOrElse {
+                it.message ?: "Invalid install command parameters"
             }
 
     AlertDialog(
@@ -308,13 +317,12 @@ internal fun InstallCommandDialog(
             },
             confirmButton = {
                 TextButton(
+                        enabled = generatedCommandResult.isSuccess,
                         onClick = {
                             clipboard.setText(AnnotatedString(generatedCommand))
                             Toast.makeText(
                                             context,
-                                            context.getString(
-                                                    R.string.client_management_install_command_copied
-                                            ),
+                                            commandCopiedMessage,
                                             Toast.LENGTH_SHORT
                                     )
                                     .show()
@@ -367,13 +375,13 @@ private fun InstallOptionField(
     Spacer(modifier = Modifier.height(12.dp))
 }
 
-private enum class InstallPlatform {
+internal enum class InstallPlatform {
     LINUX,
     WINDOWS,
     MACOS
 }
 
-private data class ClientInstallOptions(
+internal data class ClientInstallOptions(
         val disableWebSsh: Boolean = false,
         val disableAutoUpdate: Boolean = false,
         val ignoreUnsafeCert: Boolean = false,
@@ -394,56 +402,63 @@ private data class ClientInstallOptions(
         val monthRotate: String = ""
 )
 
-private fun generateInstallCommand(
+internal fun generateInstallCommand(
         serverBaseUrl: String,
         token: String,
         platform: InstallPlatform,
         options: ClientInstallOptions
 ): String {
+    requireSafeInstallValue("server URL", serverBaseUrl)
+    requireSafeInstallValue("client token", token)
     val host = serverBaseUrl.toOrigin()
+    require(host.isNotBlank()) { "Server URL must not be blank" }
+    require(token.isNotBlank()) { "Client token must not be blank" }
     val args = mutableListOf("-e", host, "-t", token)
     if (options.disableWebSsh) args += "--disable-web-ssh"
     if (options.disableAutoUpdate) args += "--disable-auto-update"
     if (options.ignoreUnsafeCert) args += "--ignore-unsafe-cert"
     if (options.memoryIncludeCache) args += "--memory-include-cache"
     if (options.useGhproxy) {
-        options.ghproxy.trim().takeIf { it.isNotEmpty() }?.let { ghproxy ->
+        options.ghproxy.safeTrimmedInstallValue("GitHub proxy")?.let { ghproxy ->
             args += "--install-ghproxy"
             args += ghproxy.normalizeGhproxy()
         }
     }
     if (options.useInstallDir) {
-        options.dir.trim().takeIf { it.isNotEmpty() }?.let { dir ->
+        options.dir.safeTrimmedInstallValue("install directory")?.let { dir ->
             args += "--install-dir"
             args += dir
         }
     }
     if (options.useServiceName) {
-        options.serviceName.trim().takeIf { it.isNotEmpty() }?.let { serviceName ->
+        options.serviceName.safeTrimmedInstallValue("service name")?.let { serviceName ->
             args += "--install-service-name"
             args += serviceName
         }
     }
     if (options.useIncludeNics) {
-        options.includeNics.trim().takeIf { it.isNotEmpty() }?.let { includeNics ->
+        options.includeNics.safeTrimmedInstallValue("included network interfaces")?.let {
+                includeNics ->
             args += "--include-nics"
             args += includeNics
         }
     }
     if (options.useExcludeNics) {
-        options.excludeNics.trim().takeIf { it.isNotEmpty() }?.let { excludeNics ->
+        options.excludeNics.safeTrimmedInstallValue("excluded network interfaces")?.let {
+                excludeNics ->
             args += "--exclude-nics"
             args += excludeNics
         }
     }
     if (options.useIncludeMountpoint) {
-        options.includeMountpoint.trim().takeIf { it.isNotEmpty() }?.let { includeMountpoint ->
+        options.includeMountpoint.safeTrimmedInstallValue("included mount point")?.let {
+                includeMountpoint ->
             args += "--include-mountpoint"
             args += includeMountpoint
         }
     }
     if (options.useMonthRotate) {
-        options.monthRotate.trim().takeIf { it.isNotEmpty() }?.let { monthRotate ->
+        options.monthRotate.safeTrimmedInstallValue("month rotation")?.let { monthRotate ->
             args += "--month-rotate"
             args += monthRotate
         }
@@ -451,23 +466,122 @@ private fun generateInstallCommand(
 
     return when (platform) {
         InstallPlatform.LINUX ->
-                "wget -qO- https://raw.githubusercontent.com/komari-monitor/komari-agent/refs/heads/main/install.sh | sudo bash -s -- " +
-                        args.joinToString(" ")
-        InstallPlatform.WINDOWS -> buildString {
-            append("powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ")
-            append(
-                    "\"iwr 'https://raw.githubusercontent.com/komari-monitor/komari-agent/refs/heads/main/install.ps1' -UseBasicParsing -OutFile 'install.ps1'; & '.\\\\install.ps1'"
-            )
-            args.forEach { arg ->
-                append(" '")
-                append(arg)
-                append("'")
-            }
-            append("\"")
-        }
+                generatePosixInstallCommand(
+                        args = args,
+                        hashCommand = "sha256sum",
+                        useSudo = true
+                )
+        InstallPlatform.WINDOWS -> generatePowerShellInstallCommand(args)
         InstallPlatform.MACOS ->
-                "zsh <(curl -sL https://raw.githubusercontent.com/komari-monitor/komari-agent/refs/heads/main/install.sh) " +
-                        args.joinToString(" ")
+                generatePosixInstallCommand(
+                        args = args,
+                        hashCommand = "shasum -a 256",
+                        useSudo = false
+                )
+    }
+}
+
+// Pinned from the official repository on 2026-07-21. Updating it requires reviewing both
+// installer scripts and replacing their independently computed SHA-256 digests below.
+internal const val KOMARI_AGENT_INSTALL_COMMIT =
+        "d68d55f92adfbd94736a49de4594a19cad91e841"
+internal const val KOMARI_AGENT_POSIX_INSTALL_SHA256 =
+        "72c55c4c34033d2f6e69cbba11fff21173e4c3a25d39340d36a54c25e1ea97d5"
+internal const val KOMARI_AGENT_POWERSHELL_INSTALL_SHA256 =
+        "d5b9881a25bcdbc939ac9dfc7157a622e345ef4ec75ca2799cfa8e0bcffd584a"
+
+private const val KOMARI_AGENT_RAW_BASE_URL =
+        "https://raw.githubusercontent.com/komari-monitor/komari-agent"
+
+private fun generatePosixInstallCommand(
+        args: List<String>,
+        hashCommand: String,
+        useSudo: Boolean
+): String = buildString {
+    val scriptUrl = "$KOMARI_AGENT_RAW_BASE_URL/$KOMARI_AGENT_INSTALL_COMMIT/install.sh"
+    appendLine("set -eu")
+    appendLine("install_file=\"\$(mktemp)\"")
+    appendLine("trap 'rm -f \"\$install_file\"' EXIT")
+    appendLine(
+            "curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location " +
+                    "${quotePosixInstallArgument(scriptUrl)} --output \"\$install_file\""
+    )
+    appendLine("actual_hash=\"\$($hashCommand \"\$install_file\")\"")
+    appendLine("actual_hash=\"\${actual_hash%% *}\"")
+    appendLine(
+            "if [ \"\$actual_hash\" != " +
+                    "${quotePosixInstallArgument(KOMARI_AGENT_POSIX_INSTALL_SHA256)} ]; then"
+    )
+    appendLine("  echo 'Komari installer checksum verification failed.' >&2")
+    appendLine("  exit 1")
+    appendLine("fi")
+    if (useSudo) append("sudo ")
+    append("bash \"\$install_file\"")
+    args.forEach { arg ->
+        append(' ')
+        append(quotePosixInstallArgument(arg))
+    }
+}
+
+private fun generatePowerShellInstallCommand(args: List<String>): String {
+    val scriptUrl = "$KOMARI_AGENT_RAW_BASE_URL/$KOMARI_AGENT_INSTALL_COMMIT/install.ps1"
+    val script = buildString {
+        appendLine("\$ErrorActionPreference = 'Stop'")
+        appendLine("[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12")
+        appendLine("\$installUrl = ${quotePowerShellInstallArgument(scriptUrl)}")
+        appendLine(
+                "\$installFile = Join-Path ([IO.Path]::GetTempPath()) " +
+                        "('komari-install-' + [Guid]::NewGuid().ToString('N') + '.ps1')"
+        )
+        appendLine("try {")
+        appendLine(
+                "  Invoke-WebRequest -Uri \$installUrl -UseBasicParsing " +
+                        "-OutFile \$installFile"
+        )
+        appendLine(
+                "  \$actualHash = (Get-FileHash -Algorithm SHA256 " +
+                        "-LiteralPath \$installFile).Hash.ToLowerInvariant()"
+        )
+        appendLine(
+                "  if (\$actualHash -ne " +
+                        "${quotePowerShellInstallArgument(KOMARI_AGENT_POWERSHELL_INSTALL_SHA256)}) " +
+                        "{ throw 'Komari installer checksum verification failed.' }"
+        )
+        append("  & \$installFile")
+        args.forEach { arg ->
+            append(' ')
+            append(quotePowerShellInstallArgument(arg))
+        }
+        appendLine()
+        appendLine("} finally {")
+        appendLine(
+                "  Remove-Item -LiteralPath \$installFile -Force " +
+                        "-ErrorAction SilentlyContinue"
+        )
+        appendLine("}")
+    }
+    val encoded = Base64.getEncoder().encodeToString(script.toByteArray(Charsets.UTF_16LE))
+    return "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+}
+
+internal fun quotePosixInstallArgument(value: String): String {
+    requireSafeInstallValue("install argument", value)
+    return "'${value.replace("'", "'\"'\"'")}'"
+}
+
+internal fun quotePowerShellInstallArgument(value: String): String {
+    requireSafeInstallValue("install argument", value)
+    return "'${value.replace("'", "''")}'"
+}
+
+private fun String.safeTrimmedInstallValue(label: String): String? {
+    requireSafeInstallValue(label, this)
+    return trim().takeIf(String::isNotEmpty)
+}
+
+private fun requireSafeInstallValue(label: String, value: String) {
+    require(value.none { it == '\r' || it == '\n' || it == '\u0000' }) {
+        "$label contains forbidden control characters"
     }
 }
 

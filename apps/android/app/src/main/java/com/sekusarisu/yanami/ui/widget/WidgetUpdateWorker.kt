@@ -36,7 +36,13 @@ class WidgetUpdateWorker(
             updateAllWidgets(WidgetState(isLoading = true, serverName = server.name))
 
             val sessionToken = serverRepository.ensureSessionToken(server)
-            val nodes = nodeRepository.getNodeInfos(server.baseUrl, sessionToken)
+            val nodes =
+                nodeRepository.getNodeInfos(
+                    baseUrl = server.baseUrl,
+                    sessionToken = sessionToken,
+                    authType = server.authType,
+                    customHeaders = server.customHeaders.toList()
+                )
             val onlineNodes = nodes.filter { it.isOnline }
 
             updateAllWidgets(

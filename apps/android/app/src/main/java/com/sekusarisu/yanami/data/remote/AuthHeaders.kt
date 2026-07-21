@@ -6,7 +6,17 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 
 internal const val SESSION_COOKIE_NAME = "session_token"
-internal const val SKIP_SESSION_INTERCEPTOR_HEADER = "X-Yanami-Skip-Session-Interceptor"
+
+private val RESERVED_CUSTOM_HEADERS =
+        setOf(
+                "authorization",
+                "cookie",
+                "host",
+                "content-length",
+                "connection",
+                "upgrade",
+                "origin"
+        )
 
 internal data class AuthHeader(val name: String, val value: String)
 
@@ -31,12 +41,35 @@ internal fun HttpRequestBuilder.applyCustomHeaders(customHeaders: List<CustomHea
     customHeaders.forEach { customHeader ->
         val name = customHeader.name.trim()
         val value = customHeader.value.trim()
-        if (name.isNotEmpty() && value.isNotEmpty()) {
+        if (isAllowedCustomHeaderName(name) && isAllowedCustomHeaderValue(value)) {
             header(name, value)
         }
     }
 }
 
-internal fun HttpRequestBuilder.skipSessionInterceptor() {
-    header(SKIP_SESSION_INTERCEPTOR_HEADER, "1")
+internal fun HttpRequestBuilder.applyAdminAuth(
+        sessionToken: String,
+        authType: AuthType,
+        customHeaders: List<CustomHeader>
+) {
+    if (authType == AuthType.GUEST) {
+        throw IllegalStateException("游客模式不支持管理操作")
+    }
+    applyCustomHeaders(customHeaders.toList())
+    applyAuth(sessionToken, authType)
 }
+
+internal fun isAllowedCustomHeaderName(name: String): Boolean =
+        name.length in 1..128 &&
+                name.lowercase() !in RESERVED_CUSTOM_HEADERS &&
+                name.all { char ->
+                    char in 'a'..'z' ||
+                            char in 'A'..'Z' ||
+                            char in '0'..'9' ||
+                            char in "!#\$%&'*+-.^_`|~"
+                }
+
+internal fun isAllowedCustomHeaderValue(value: String): Boolean =
+        value.isNotEmpty() &&
+                value.length <= 8_192 &&
+                value.none { it == '\r' || it == '\n' || it == '\u0000' }

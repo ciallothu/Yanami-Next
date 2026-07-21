@@ -50,6 +50,8 @@ import cafe.adriel.voyager.koin.koinScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import com.sekusarisu.yanami.R
+import com.sekusarisu.yanami.data.local.preferences.UserPreferences
+import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
 import com.sekusarisu.yanami.ui.screen.AdaptiveContentPane
 import com.sekusarisu.yanami.ui.screen.client.ClientManagementScreen
 import com.sekusarisu.yanami.ui.screen.nodedetail.NodeDetailScreen
@@ -58,6 +60,7 @@ import com.sekusarisu.yanami.ui.screen.server.AddServerScreen
 import com.sekusarisu.yanami.ui.screen.server.ServerListScreen
 import com.sekusarisu.yanami.ui.screen.server.ServerReLoginScreen
 import com.sekusarisu.yanami.ui.screen.soundClick
+import org.koin.compose.koinInject
 
 class NodeListScreen : Screen {
 
@@ -70,6 +73,10 @@ class NodeListScreen : Screen {
         val context = LocalContext.current
         val lifecycleOwner = LocalLifecycleOwner.current
         val adaptiveInfo = rememberAdaptiveLayoutInfo()
+        val preferencesRepository = koinInject<UserPreferencesRepository>()
+        val preferences by preferencesRepository.preferencesFlow.collectAsStateWithLifecycle(
+                initialValue = UserPreferences()
+        )
         var isAllExpanded by remember { mutableStateOf(true) }
 
         DisposableEffect(lifecycleOwner, viewModel) {
@@ -139,6 +146,7 @@ class NodeListScreen : Screen {
                 state = state,
                 isAllExpanded = isAllExpanded,
                 isTabletLandscape = adaptiveInfo.isTabletLandscape,
+                maskIpAddresses = preferences.maskIpEnabled,
                 onBackClick = soundClick(navigateBack),
                 onManageClientsClick = soundClick(manageClients),
                 onToggleExpandClick = soundClick(toggleExpand),
@@ -155,6 +163,7 @@ internal fun NodeListScaffoldContent(
         state: NodeListContract.State,
         isAllExpanded: Boolean,
         isTabletLandscape: Boolean,
+        maskIpAddresses: Boolean = false,
         onBackClick: () -> Unit,
         onManageClientsClick: () -> Unit,
         onToggleExpandClick: () -> Unit,
@@ -233,7 +242,8 @@ internal fun NodeListScaffoldContent(
                             state = state,
                             onEvent = onEvent,
                             isAllExpanded = isAllExpanded,
-                            isTabletLandscape = isTabletLandscape
+                            isTabletLandscape = isTabletLandscape,
+                            maskIpAddresses = maskIpAddresses
                     )
                 }
             }
@@ -246,16 +256,24 @@ private fun NodeListContent(
         state: NodeListContract.State,
         onEvent: (NodeListContract.Event) -> Unit,
         isAllExpanded: Boolean,
-        isTabletLandscape: Boolean
+        isTabletLandscape: Boolean,
+        maskIpAddresses: Boolean
 ) {
     val filteredNodes by
-            remember(state.nodes, state.searchQuery, state.selectedGroup, state.statusFilter) {
+            remember(
+                    state.nodes,
+                    state.searchQuery,
+                    state.selectedGroup,
+                    state.statusFilter,
+                    maskIpAddresses
+            ) {
                 derivedStateOf {
                     filterNodes(
                             nodes = state.nodes,
                             searchQuery = state.searchQuery,
                             selectedGroup = state.selectedGroup,
-                            statusFilter = state.statusFilter
+                            statusFilter = state.statusFilter,
+                            maskIpAddresses = maskIpAddresses
                     )
                 }
             }
@@ -323,6 +341,8 @@ private fun NodeListContent(
                         totalNetOut = state.totalNetOut,
                         totalTrafficUp = state.totalTrafficUp,
                         totalTrafficDown = state.totalTrafficDown,
+                        currentTrafficUp = state.currentTrafficUp,
+                        currentTrafficDown = state.currentTrafficDown,
                         statusFilter = state.statusFilter,
                         onStatusFilterSelected = {
                             onEvent(NodeListContract.Event.StatusFilterSelected(it))
@@ -358,7 +378,8 @@ private fun NodeListContent(
                     NodeCard(
                             node = node,
                             onClick = onNodeCardClick,
-                            isExpanded = isAllExpanded
+                            isExpanded = isAllExpanded,
+                            maskIpAddresses = maskIpAddresses
                     )
                 }
             }
@@ -370,11 +391,12 @@ private fun NodeListContent(
     }
 }
 
-private fun filterNodes(
+internal fun filterNodes(
         nodes: List<com.sekusarisu.yanami.domain.model.Node>,
         searchQuery: String,
         selectedGroup: String?,
-        statusFilter: NodeListContract.StatusFilter
+        statusFilter: NodeListContract.StatusFilter,
+        maskIpAddresses: Boolean = false
 ): List<com.sekusarisu.yanami.domain.model.Node> {
     val trimmedQuery = searchQuery.trim()
     return nodes.filter { node ->
@@ -383,7 +405,10 @@ private fun filterNodes(
                         node.name.contains(trimmedQuery, ignoreCase = true) ||
                         node.region.contains(trimmedQuery, ignoreCase = true) ||
                         node.os.contains(trimmedQuery, ignoreCase = true) ||
-                        node.cpuName.contains(trimmedQuery, ignoreCase = true)
+                        node.cpuName.contains(trimmedQuery, ignoreCase = true) ||
+                        (!maskIpAddresses &&
+                                (node.ipv4.contains(trimmedQuery, ignoreCase = true) ||
+                                        node.ipv6.contains(trimmedQuery, ignoreCase = true)))
 
         val matchesGroup = selectedGroup == null || node.group == selectedGroup
         val matchesStatus =

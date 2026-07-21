@@ -79,6 +79,8 @@ internal fun OverviewCard(
         totalNetOut: Long,
         totalTrafficUp: Long,
         totalTrafficDown: Long,
+        currentTrafficUp: Long = 0,
+        currentTrafficDown: Long = 0,
         statusFilter: NodeListContract.StatusFilter = NodeListContract.StatusFilter.ALL,
         onStatusFilterSelected: (NodeListContract.StatusFilter) -> Unit = {}
 ) {
@@ -129,6 +131,12 @@ internal fun OverviewCard(
                         label = stringResource(R.string.node_net_traffic),
                         primaryText = "↑ ${formatBytes(totalTrafficUp)}",
                         secondaryText = "↓ ${formatBytes(totalTrafficDown)}",
+                        modifier = Modifier.weight(1.55f)
+                )
+                OverviewMetricItem(
+                        label = stringResource(R.string.node_net_interval_traffic),
+                        primaryText = "↑ ${formatBytes(currentTrafficUp)}",
+                        secondaryText = "↓ ${formatBytes(currentTrafficDown)}",
                         modifier = Modifier.weight(1.55f)
                 )
             }
@@ -182,6 +190,11 @@ internal fun OverviewCard(
                             label = stringResource(R.string.node_net_traffic),
                             primaryText = "↑ ${formatBytes(totalTrafficUp)}",
                             secondaryText = "↓ ${formatBytes(totalTrafficDown)}"
+                    )
+                    OverviewMetricItem(
+                            label = stringResource(R.string.node_net_interval_traffic),
+                            primaryText = "↑ ${formatBytes(currentTrafficUp)}",
+                            secondaryText = "↓ ${formatBytes(currentTrafficDown)}"
                     )
                 }
             }

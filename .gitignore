@@ -6,6 +6,8 @@
 /build
 /captures
 /apps/android/build/
+/apps/android/terminal-emulator/build/
+/apps/android/terminal-view/build/
 /apps/android/local.properties
 /android/
 .externalNativeBuild
@@ -17,3 +19,13 @@ REQUEST.MD
 .gradle-home/
 .gradle-user/
 .kotlin/
+
+# Signing credentials and generated Apple developer state
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.mobileprovision
+DerivedData/
+**/xcuserdata/
+*.xcuserstate

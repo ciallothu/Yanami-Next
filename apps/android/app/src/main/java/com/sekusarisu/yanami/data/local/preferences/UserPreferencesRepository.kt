@@ -38,6 +38,7 @@ class UserPreferencesRepository(private val context: Context) {
         private val AUTO_ENTER_NODELIST_KEY = booleanPreferencesKey("auto_enter_nodelist")
         private val CHART_ANIMATION_KEY = booleanPreferencesKey("chart_animation")
         private val BIOMETRIC_ENABLED_KEY = booleanPreferencesKey("biometric_enabled")
+        private val MASK_IP_ENABLED_KEY = booleanPreferencesKey("mask_ip_enabled")
         private val TERMINAL_SNIPPETS_KEY = stringPreferencesKey("terminal_snippets")
         const val DEFAULT_TERMINAL_FONT_SIZE = 20
     }
@@ -54,7 +55,8 @@ class UserPreferencesRepository(private val context: Context) {
                         fontScale = prefs[FONT_SCALE_KEY] ?: 1.0f,
                         autoEnterNodeList = prefs[AUTO_ENTER_NODELIST_KEY] ?: false,
                         chartAnimationEnabled = prefs[CHART_ANIMATION_KEY] ?: true,
-                        biometricEnabled = prefs[BIOMETRIC_ENABLED_KEY] ?: false
+                        biometricEnabled = prefs[BIOMETRIC_ENABLED_KEY] ?: false,
+                        maskIpEnabled = prefs[MASK_IP_ENABLED_KEY] ?: false
                 )
             }
 
@@ -117,6 +119,11 @@ class UserPreferencesRepository(private val context: Context) {
         context.dataStore.edit { it[BIOMETRIC_ENABLED_KEY] = enabled }
     }
 
+    /** Hide the identifying suffix of node IP addresses throughout the app. */
+    suspend fun setMaskIpEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[MASK_IP_ENABLED_KEY] = enabled }
+    }
+
     private fun decodeSnippets(raw: String): List<TerminalSnippet> =
             runCatching { json.decodeFromString<List<TerminalSnippet>>(raw) }.getOrDefault(emptyList())
 }
@@ -129,5 +136,6 @@ data class UserPreferences(
         val fontScale: Float = 1.0f,
         val autoEnterNodeList: Boolean = false,
         val chartAnimationEnabled: Boolean = true,
-        val biometricEnabled: Boolean = false
+        val biometricEnabled: Boolean = false,
+        val maskIpEnabled: Boolean = false
 )

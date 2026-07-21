@@ -4,6 +4,7 @@ import android.content.Context
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.Node
 import com.sekusarisu.yanami.domain.model.ServerInstance
 import com.sekusarisu.yanami.domain.repository.NodeRepository
@@ -106,13 +107,18 @@ class NodeListViewModel(
                 setState { copy(serverName = server.name) }
                 val sessionToken = ensureSession(server)
 
-                val nodes = nodeRepository.getNodeInfos(server.baseUrl, sessionToken)
+                val nodes =
+                        nodeRepository.getNodeInfos(
+                                baseUrl = server.baseUrl,
+                                sessionToken = sessionToken,
+                                authType = server.authType,
+                                customHeaders = server.customHeaders.toList()
+                        )
                 updateNodesState(nodes)
                 updateLoadingState(mode, isLoading = false)
 
                 latestStreamRequest =
                         NodeStatusStreamRequest(
-                                baseUrl = server.baseUrl,
                                 baseNodes = nodes,
                                 serverId = server.id,
                                 requires2fa = server.requires2fa,
@@ -125,7 +131,8 @@ class NodeListViewModel(
                             nodes,
                             server.id,
                             server.requires2fa,
-                            server.authType
+                            server.authType,
+                            server.customHeaders.toList()
                     )
                 }
             } catch (e: Exception) {
@@ -225,29 +232,34 @@ class NodeListViewModel(
         resumeStreamingJob?.cancel()
         resumeStreamingJob =
                 screenModelScope.launch {
+                    var currentRequires2fa = streamRequest.requires2fa
+                    var currentAuthType = streamRequest.authType
                     try {
                         val activeServer = serverRepository.getActive() ?: return@launch
                         if (activeServer.id != streamRequest.serverId) {
                             loadNodes()
                             return@launch
                         }
+                        currentRequires2fa = activeServer.requires2fa
+                        currentAuthType = activeServer.authType
                         val sessionToken = ensureSession(activeServer)
                         startWebSocketStatusFlow(
-                                baseUrl = streamRequest.baseUrl,
+                                baseUrl = activeServer.baseUrl,
                                 sessionToken = sessionToken,
                                 baseNodes =
                                         if (currentState.nodes.isNotEmpty()) currentState.nodes
                                         else streamRequest.baseNodes,
                                 serverId = streamRequest.serverId,
-                                requires2fa = streamRequest.requires2fa,
-                                authType = streamRequest.authType
+                                requires2fa = activeServer.requires2fa,
+                                authType = activeServer.authType,
+                                customHeaders = activeServer.customHeaders.toList()
                         )
                     } catch (e: Exception) {
                         if (!handleSessionExpired(
                                         streamRequest.serverId,
-                                        streamRequest.requires2fa,
+                                        currentRequires2fa,
                                         e,
-                                        streamRequest.authType
+                                        currentAuthType
                                 )
                         ) {
                             android.util.Log.w(
@@ -266,12 +278,19 @@ class NodeListViewModel(
             baseNodes: List<Node>,
             serverId: Long,
             requires2fa: Boolean,
-            authType: AuthType = AuthType.PASSWORD
+            authType: AuthType,
+            customHeaders: List<CustomHeader>
     ) {
         wsJob?.cancel()
         wsJob =
                 nodeRepository
-                        .observeNodeStatus(baseUrl, sessionToken, baseNodes)
+                        .observeNodeStatus(
+                                baseUrl = baseUrl,
+                                sessionToken = sessionToken,
+                                baseNodes = baseNodes,
+                                authType = authType,
+                                customHeaders = customHeaders.toList()
+                        )
                         .onEach { updatedNodes -> updateNodesState(updatedNodes) }
                         .catch { e ->
                             if (!handleSessionExpired(serverId, requires2fa, e, authType)) {
@@ -298,7 +317,9 @@ class NodeListViewModel(
                     totalNetIn = onlineNodes.sumOf { it.netIn },
                     totalNetOut = onlineNodes.sumOf { it.netOut },
                     totalTrafficUp = onlineNodes.sumOf { it.netTotalUp },
-                    totalTrafficDown = onlineNodes.sumOf { it.netTotalDown }
+                    totalTrafficDown = onlineNodes.sumOf { it.netTotalDown },
+                    currentTrafficUp = onlineNodes.sumOf { it.trafficUp },
+                    currentTrafficDown = onlineNodes.sumOf { it.trafficDown }
             )
         }
     }
@@ -309,7 +330,6 @@ class NodeListViewModel(
     }
 
     private data class NodeStatusStreamRequest(
-            val baseUrl: String,
             val baseNodes: List<Node>,
             val serverId: Long,
             val requires2fa: Boolean,

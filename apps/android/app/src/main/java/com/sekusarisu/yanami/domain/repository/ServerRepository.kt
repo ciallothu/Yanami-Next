@@ -75,7 +75,7 @@ interface ServerRepository {
     /**
      * 登录到指定实例
      *
-     * 成功时更新 SessionManager 并将 session_token 持久化到 DB。
+     * 成功时将 session_token 加密持久化到 DB。
      * @return 成功返回 true，需要 2FA 抛出 Requires2FAException，其他失败抛异常
      */
     suspend fun login(instance: ServerInstance, twoFaCode: String? = null): Boolean
@@ -83,7 +83,7 @@ interface ServerRepository {
     /**
      * 尝试恢复缓存的 session
      *
-     * 从 DB 读取加密的 session_token → 验证有效性 → 更新 SessionManager。
+     * 从 ServerInstance 快照读取已解密的 session_token 并验证有效性。
      * @return true = 恢复成功，false = token 无效或不存在（需要重新登录）
      */
     suspend fun restoreSession(instance: ServerInstance): Boolean

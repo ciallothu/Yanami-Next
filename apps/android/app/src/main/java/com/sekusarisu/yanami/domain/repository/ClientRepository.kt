@@ -1,6 +1,7 @@
 package com.sekusarisu.yanami.domain.repository
 
 import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.ManagedClient
 import com.sekusarisu.yanami.domain.model.ManagedClientCreateResult
 import com.sekusarisu.yanami.domain.model.ManagedClientDraft
@@ -9,13 +10,15 @@ interface ClientRepository {
     suspend fun listClients(
             baseUrl: String,
             sessionToken: String,
-            authType: AuthType
+            authType: AuthType,
+            customHeaders: List<CustomHeader>
     ): List<ManagedClient>
 
     suspend fun getClient(
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ): ManagedClient
 
@@ -23,6 +26,7 @@ interface ClientRepository {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             name: String?
     ): ManagedClientCreateResult
 
@@ -30,6 +34,7 @@ interface ClientRepository {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String,
             draft: ManagedClientDraft
     )
@@ -38,6 +43,7 @@ interface ClientRepository {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     )
 
@@ -45,6 +51,7 @@ interface ClientRepository {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ): String
 
@@ -52,6 +59,7 @@ interface ClientRepository {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             weights: Map<String, Int>
     )
 }

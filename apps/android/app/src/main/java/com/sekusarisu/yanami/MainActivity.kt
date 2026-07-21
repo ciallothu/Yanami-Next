@@ -2,21 +2,28 @@ package com.sekusarisu.yanami
 
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Text
@@ -29,10 +36,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
 import cafe.adriel.voyager.core.screen.Screen
 import cafe.adriel.voyager.navigator.Navigator
 import cafe.adriel.voyager.transitions.SlideTransition
@@ -55,6 +66,7 @@ import com.sekusarisu.yanami.ui.screen.settings.SettingsScreen
 import com.sekusarisu.yanami.ui.screen.terminal.SshTerminalScreen
 import com.sekusarisu.yanami.ui.theme.ThemeColor
 import com.sekusarisu.yanami.ui.theme.YanamiTheme
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import org.koin.android.ext.android.inject
 
@@ -69,9 +81,14 @@ class MainActivity : AppCompatActivity() {
     private val prefsRepo: UserPreferencesRepository by inject()
     private val serverRepo: ServerRepository by inject()
     private val updateCheckService: UpdateCheckService by inject()
+    private var authReady by mutableStateOf(false)
+    private var authenticationPromptVisible = false
+    private var authenticationGeneration = 0
+    private var pendingAuthenticationSuccess = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         enableEdgeToEdge()
 
         setContent {
@@ -87,9 +104,6 @@ class MainActivity : AppCompatActivity() {
 
             // 解析初始导航栈
             var initialScreens by remember { mutableStateOf<List<Screen>?>(null) }
-            // 生物识别通过标志（未启用时直接为 true）
-            var authReady by remember { mutableStateOf(false) }
-
             LaunchedEffect(Unit) {
                 val initPrefs = prefsRepo.preferencesFlow.first()
                 val screens = if (initPrefs.autoEnterNodeList) {
@@ -103,25 +117,6 @@ class MainActivity : AppCompatActivity() {
                     listOf(ServerListScreen())
                 }
                 initialScreens = screens
-
-                if (!initPrefs.biometricEnabled) {
-                    authReady = true
-                } else {
-                    val biometricManager = BiometricManager.from(this@MainActivity)
-                    val canAuth = biometricManager.canAuthenticate(
-                        BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
-                    )
-                    if (canAuth == BiometricManager.BIOMETRIC_SUCCESS) {
-                        showBiometricPrompt(
-                            onSuccess = { authReady = true },
-                            onError = { finish() }
-                        )
-                    } else {
-                        // 设备不支持或未注册凭据，放行
-                        authReady = true
-                    }
-                }
 
                 // 静默检查更新
                 val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -193,10 +188,102 @@ class MainActivity : AppCompatActivity() {
                                 SlideTransition(navigator)
                             }
                         }
+                    } else if (screens != null && prefs.biometricEnabled) {
+                        BiometricLockedContent(onUnlock = ::authenticateIfNeeded)
                     }
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (pendingAuthenticationSuccess) {
+            pendingAuthenticationSuccess = false
+            authReady = true
+        }
+        if (authReady) {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            authenticateIfNeeded()
+        }
+    }
+
+    override fun onPause() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        if (!authenticationPromptVisible && !pendingAuthenticationSuccess) {
+            authenticationGeneration += 1
+        }
+        authReady = false
+        super.onStop()
+    }
+
+    private fun authenticateIfNeeded() {
+        val generation = authenticationGeneration
+        lifecycleScope.launch {
+            val preferences = prefsRepo.preferencesFlow.first()
+            if (generation != authenticationGeneration ||
+                            !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            ) {
+                return@launch
+            }
+            if (!preferences.biometricEnabled) {
+                completeAuthentication(generation)
+                return@launch
+            }
+            if (authReady || authenticationPromptVisible) return@launch
+
+            val authenticators =
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            if (BiometricManager.from(this@MainActivity).canAuthenticate(authenticators) !=
+                            BiometricManager.BIOMETRIC_SUCCESS
+            ) {
+                Toast.makeText(
+                                this@MainActivity,
+                                R.string.biometric_unavailable,
+                                Toast.LENGTH_LONG
+                        )
+                        .show()
+                finish()
+                return@launch
+            }
+
+            authenticationPromptVisible = true
+            showBiometricPrompt(
+                    onSuccess = {
+                        if (generation == authenticationGeneration) {
+                            completeAuthentication(generation)
+                        }
+                    },
+                    onError = {
+                        if (generation == authenticationGeneration) {
+                            authenticationPromptVisible = false
+                            pendingAuthenticationSuccess = false
+                            authReady = false
+                        }
+                    }
+            )
+        }
+    }
+
+    private fun completeAuthentication(generation: Int) {
+        if (generation != authenticationGeneration) return
+        authenticationPromptVisible = false
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            pendingAuthenticationSuccess = true
+            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            authReady = false
+            return
+        }
+        pendingAuthenticationSuccess = false
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        authReady = true
     }
 
     private fun showBiometricPrompt(onSuccess: () -> Unit, onError: () -> Unit) {
@@ -222,6 +309,29 @@ class MainActivity : AppCompatActivity() {
             )
             .build()
         biometricPrompt.authenticate(promptInfo)
+    }
+}
+
+@Composable
+private fun BiometricLockedContent(onUnlock: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                    text = stringResource(R.string.biometric_locked_title),
+                    style = MaterialTheme.typography.titleLarge
+            )
+            Text(
+                    text = stringResource(R.string.biometric_locked_description),
+                    style = MaterialTheme.typography.bodyMedium
+            )
+            Button(onClick = onUnlock) {
+                Text(stringResource(R.string.biometric_unlock_action))
+            }
+        }
     }
 }
 

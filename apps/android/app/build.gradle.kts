@@ -5,8 +5,12 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-val yanamiVersionCode = providers.gradleProperty("yanamiVersionCode").orNull?.toIntOrNull() ?: 9
-val yanamiVersionName = providers.gradleProperty("yanamiVersionName").orNull ?: "YanamiNext-Build-local"
+val releaseVersionName = rootProject.file("../../VERSION").readText().trim()
+val releaseVersionCode = rootProject.file("../../VERSION_CODE").readText().trim().toInt()
+val yanamiVersionCode =
+        providers.gradleProperty("yanamiVersionCode").orNull?.toIntOrNull() ?: releaseVersionCode
+val yanamiVersionName =
+        providers.gradleProperty("yanamiVersionName").orNull ?: releaseVersionName
 
 android {
     namespace = "com.sekusarisu.yanami"
@@ -115,8 +119,9 @@ dependencies {
     // Vico Charts
     implementation(libs.vico.compose.m3)
 
-    // SSH Terminal (termux terminal-view via JitPack)
-    implementation("com.github.Termux.Termux-app:terminal-view:v0.119.0-beta.3")
+    // SSH Terminal. Both audited Termux modules are built locally from a fixed upstream revision.
+    implementation(project(":terminal-view"))
+    implementation(project(":terminal-emulator"))
 
     // Security
     implementation(libs.security.crypto)

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Upload
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -76,6 +77,8 @@ class SettingsHubScreen : Screen {
         var showLanguageDialog by remember { mutableStateOf(false) }
         val context = LocalContext.current
         val adaptiveInfo = rememberAdaptiveLayoutInfo()
+        val biometricPromptTitle = stringResource(R.string.biometric_prompt_title)
+        val biometricPromptSubtitle = stringResource(R.string.biometric_prompt_subtitle)
         val exportLauncher =
                 rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) {
                     uri -> if (uri != null) viewModel.exportConfig(uri)
@@ -154,13 +157,29 @@ class SettingsHubScreen : Screen {
                     onCheckedChange = { newValue ->
                         authenticateWithBiometric(
                             activity = context as FragmentActivity,
-                            title = context.getString(R.string.biometric_prompt_title),
-                            subtitle = context.getString(R.string.biometric_prompt_subtitle),
+                            title = biometricPromptTitle,
+                            subtitle = biometricPromptSubtitle,
+                            onUnavailable = {
+                                Toast.makeText(
+                                                context,
+                                                R.string.biometric_unavailable,
+                                                Toast.LENGTH_SHORT
+                                        )
+                                        .show()
+                            },
                             onSuccess = {
                                 viewModel.onEvent(SettingsEvent.SetBiometricEnabled(newValue))
                             }
                         )
                     }
+                )
+
+                SettingsToggleItem(
+                    icon = Icons.Default.VisibilityOff,
+                    title = stringResource(R.string.settings_mask_ip),
+                    subtitle = stringResource(R.string.settings_mask_ip_desc),
+                    checked = state.maskIpEnabled,
+                    onCheckedChange = { viewModel.onEvent(SettingsEvent.SetMaskIpEnabled(it)) }
                 )
 
                 // ── 分组标题: UI ──
@@ -316,12 +335,13 @@ private fun SectionHeader(title: String) {
 
 /**
  * 弹出生物识别/设备密码验证弹窗，成功后回调 [onSuccess]。
- * 若设备不支持任何认证方式，直接调用 [onSuccess]（降级放行）。
+ * Authentication availability failures never change the protected setting.
  */
 private fun authenticateWithBiometric(
         activity: FragmentActivity,
         title: String,
         subtitle: String,
+        onUnavailable: () -> Unit,
         onSuccess: () -> Unit
 ) {
     val authenticators =
@@ -329,8 +349,7 @@ private fun authenticateWithBiometric(
                     BiometricManager.Authenticators.DEVICE_CREDENTIAL
     val canAuth = BiometricManager.from(activity).canAuthenticate(authenticators)
     if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
-        // 设备不支持或未注册凭据，直接放行
-        onSuccess()
+        onUnavailable()
         return
     }
     val prompt =

@@ -5,7 +5,6 @@ import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
 import com.sekusarisu.yanami.data.remote.buildKomariWebSocketEndpoint
 import com.sekusarisu.yanami.data.remote.runKomariWebSocketLifecycle
-import com.sekusarisu.yanami.data.remote.SessionManager
 import com.sekusarisu.yanami.domain.model.TerminalSnippet
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.repository.ServerRepository
@@ -16,29 +15,31 @@ import com.termux.terminal.TerminalSessionClient
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.websocket.Frame
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.time.Instant
 import java.util.UUID
 
 /**
  * SSH 终端 ViewModel
  *
  * 管理 WebSocket 连接生命周期，以及 [WsTerminalBridge] 与 WebSocket 之间的双向数据路由：
- * - 用户按键 → [TerminalInputCapture] → [sendInput] → [sendQueue] → WebSocket Binary Frame
- * - WebSocket Binary Frame → [WsTerminalBridge.feedOutput] → TerminalEmulator → 重绘
- * - 终端尺寸变化 → [sendResize] → [sendQueue] → WebSocket Text Frame (resize JSON)
- * - 定时心跳 → WebSocket Text Frame (heartbeat JSON)
+ * - 原生 Termux 输入/终端响应 → transport → [sendQueue] → WebSocket Binary Frame
+ * - WebSocket Text/Binary Frame → bounded output pump → TerminalEmulator → 重绘
+ * - 原生 TerminalView 尺寸变化 → transport → resize JSON
+ * - 定时 WebSocket ping 保活
  */
 class SshTerminalViewModel(
         val uuid: String,
         private val serverRepository: ServerRepository,
-        private val sessionManager: SessionManager,
         private val httpClient: HttpClient,
         private val userPreferencesRepository: UserPreferencesRepository
 ) :
@@ -48,11 +49,16 @@ class SshTerminalViewModel(
 
     companion object {
         private const val TAG = "SshTerminalVM"
-        private const val HEARTBEAT_INTERVAL_MS = 30_000L
+        // Keep below the shared HttpClient's 15-second socket timeout.
+        private const val HEARTBEAT_INTERVAL_MS = 10_000L
+        private const val SEND_QUEUE_CAPACITY = 128
+        private const val MAX_INPUT_CHUNK_BYTES = 32 * 1024
     }
 
-    /** 消息队列，承载所有需要通过 WebSocket 发送的数据 */
-    private val sendQueue = Channel<WsOutMessage>(Channel.BUFFERED)
+    /** 单一 FIFO 队列保证软键盘、硬件键、粘贴、终端回复和 resize 的发送顺序。 */
+    private val sendQueue = Channel<WsOutMessage>(SEND_QUEUE_CAPACITY)
+
+    private var wsJob: Job? = null
 
     /**
      * TerminalSession 客户端桥接，Screen 创建 TerminalView 后通过
@@ -60,14 +66,18 @@ class SshTerminalViewModel(
      */
     val clientBridge = TerminalClientBridge()
 
-    /** WebSocket ↔ TerminalEmulator 桥接器，向 Screen 暴露 session 供 TerminalView 附加 */
-    val terminalBridge = WsTerminalBridge(clientBridge)
+    /** WebSocket ↔ TerminalEmulator 桥接器，向 Screen 暴露 session 供 TerminalView 附加。 */
+    val terminalBridge =
+            WsTerminalBridge(
+                    sessionClient = clientBridge,
+                    onInput = ::sendRawInput,
+                    onResize = ::sendResize,
+                    onClose = { wsJob?.cancel() }
+            )
 
     /** 缓存 onSizeChanged 最后报告的终端尺寸，建连后作为首次 resize 发送 */
     private var lastCols: Int = 80
     private var lastRows: Int = 24
-
-    private var wsJob: Job? = null
 
     init {
         // 从 DataStore 读取上次保存的字号，恢复用户偏好
@@ -110,7 +120,7 @@ class SshTerminalViewModel(
         }
     }
 
-    /** 将用户按键字节路由到 WebSocket（由 TerminalInputCapture 调用）
+    /** 将工具栏按键字节路由到 WebSocket。
      *
      * 若 CTRL/ALT 修饰键激活，自动应用修饰后发送，并将修饰键重置为未激活状态。
      * - CTRL + 单字节字符 → 该字符 & 0x1F（控制码）
@@ -126,15 +136,20 @@ class SshTerminalViewModel(
             alt -> byteArrayOf(27) + bytes
             else -> bytes
         }
-        screenModelScope.launch {
-            sendQueue.send(WsOutMessage.Binary(modifiedBytes))
-        }
+        enqueueBinary(modifiedBytes)
     }
 
-    /** 直接将原始字节发送到 WebSocket（不应用 CTRL/ALT 一次性修饰） */
+    /** 直接将原始有序字节发送到 WebSocket（由 Termux transport 和命令片段调用）。 */
     fun sendRawInput(bytes: ByteArray) {
-        screenModelScope.launch {
-            sendQueue.send(WsOutMessage.Binary(bytes))
+        enqueueBinary(bytes)
+    }
+
+    private fun enqueueBinary(bytes: ByteArray) {
+        var offset = 0
+        while (offset < bytes.size) {
+            val end = minOf(offset + MAX_INPUT_CHUNK_BYTES, bytes.size)
+            if (!enqueueMessage(WsOutMessage.Binary(bytes.copyOfRange(offset, end)))) return
+            offset = end
         }
     }
 
@@ -187,17 +202,23 @@ class SshTerminalViewModel(
      * 若 WebSocket 尚未建连，仅缓存最新尺寸；建连后立即作为初始 resize 发送。
      */
     fun sendResize(cols: Int, rows: Int) {
-        lastCols = cols
-        lastRows = rows
+        val safeCols = cols.coerceAtLeast(1)
+        val safeRows = rows.coerceAtLeast(1)
+        if (lastCols == safeCols && lastRows == safeRows) return
+        lastCols = safeCols
+        lastRows = safeRows
         if (!currentState.isConnected) return
-        val json =
-                buildJsonObject {
-                    put("type", "resize")
-                    put("cols", cols)
-                    put("rows", rows)
-                }
-                        .toString()
-        screenModelScope.launch { sendQueue.send(WsOutMessage.Text(json)) }
+        enqueueMessage(WsOutMessage.Text(resizeMessage(safeCols, safeRows)))
+    }
+
+    internal fun isVirtualCtrlActive(): Boolean = currentState.ctrlActive
+
+    internal fun isVirtualAltActive(): Boolean = currentState.altActive
+
+    internal fun consumeVirtualModifiers() {
+        if (currentState.ctrlActive || currentState.altActive) {
+            setState { copy(ctrlActive = false, altActive = false) }
+        }
     }
 
     private fun connect() {
@@ -215,9 +236,26 @@ class SshTerminalViewModel(
                         return@launch
                     }
 
-                    val sessionToken = sessionManager.getSessionToken()
-                    if (sessionToken == null) {
-                        setState { copy(isConnecting = false, error = "无法获取 session_token，请重新登录") }
+                    val sessionToken =
+                            try {
+                                serverRepository.ensureSessionToken(server)
+                            } catch (_: Exception) {
+                                setState {
+                                    copy(
+                                            isConnecting = false,
+                                            isConnected = false,
+                                            error = "无法建立安全会话，请重新登录"
+                                    )
+                                }
+                                sendEffect(
+                                        SshTerminalContract.Effect.ShowToast(
+                                                "SSH 鉴权失败，请重新登录"
+                                        )
+                                )
+                                return@launch
+                            }
+                    if (sessionToken.isBlank() && server.authType != AuthType.GUEST) {
+                        setState { copy(isConnecting = false, error = "无法获取有效认证凭据") }
                         return@launch
                     }
 
@@ -226,7 +264,8 @@ class SshTerminalViewModel(
                                     server.baseUrl,
                                     "/api/admin/client/$uuid/terminal"
                             )
-                    val authType = sessionManager.getAuthType() ?: AuthType.PASSWORD
+                    val authType = server.authType
+                    val customHeaders = server.customHeaders.toList()
 
                     Log.d(TAG, "Preparing terminal WebSocket (authType=$authType)")
 
@@ -234,30 +273,21 @@ class SshTerminalViewModel(
                         val wsBlock: suspend DefaultClientWebSocketSession.() -> Unit = {
                             Log.d(TAG, "WebSocket connected")
                             val wsSession = this
-                            setState { copy(isConnecting = false, isConnected = true) }
+                            withContext(Dispatchers.Main.immediate) {
+                                setState {
+                                    copy(isConnecting = false, isConnected = true, error = null)
+                                }
+                            }
 
                             // 建连后立即发送初始 resize（使用 onSizeChanged 已缓存的实际尺寸）
-                            val initResize =
-                                    buildJsonObject {
-                                        put("type", "resize")
-                                        put("cols", lastCols)
-                                        put("rows", lastRows)
-                                    }
-                                            .toString()
-                            wsSession.send(Frame.Text(initResize))
+                            wsSession.send(Frame.Text(resizeMessage(lastCols, lastRows)))
                             Log.d(TAG, "Sent initial resize: ${lastCols}x${lastRows}")
 
-                            // 心跳协程：每 30 秒发送一次 heartbeat
+                            // 标准 WebSocket ping 由服务端协议栈回复 pong，不污染终端 JSON 协议。
                             val heartbeatJob = launch {
                                 while (isActive) {
                                     delay(HEARTBEAT_INTERVAL_MS)
-                                    val heartbeat =
-                                            buildJsonObject {
-                                                        put("type", "heartbeat")
-                                                        put("timestamp", Instant.now().toString())
-                                                    }
-                                                    .toString()
-                                    wsSession.send(Frame.Text(heartbeat))
+                                    wsSession.send(Frame.Ping(byteArrayOf()))
                                 }
                             }
 
@@ -273,17 +303,30 @@ class SshTerminalViewModel(
                                 }
                             }
 
-                            // 接收循环：将 Binary Frame 写入 TerminalEmulator
+                            val outputPump =
+                                    TerminalOutputPump(
+                                            scope = this,
+                                            consume = terminalBridge::feedOutput
+                                    )
+
+                            // Komari terminal output is normally binary, while status/errors are text.
                             try {
                                 for (frame in incoming) {
                                     when (frame) {
-                                        is Frame.Binary -> terminalBridge.feedOutput(frame.data)
+                                        is Frame.Binary -> outputPump.enqueue(frame.data)
+                                        is Frame.Text -> outputPump.enqueue(frame.data)
                                         else -> {}
                                     }
                                 }
                             } finally {
                                 heartbeatJob.cancel()
                                 senderJob.cancel()
+                                withContext(NonCancellable) {
+                                    outputPump.closeAndDrain()
+                                    withContext(Dispatchers.Main.immediate) {
+                                        setState { copy(isConnected = false) }
+                                    }
+                                }
                             }
                         }
 
@@ -291,12 +334,14 @@ class SshTerminalViewModel(
                                 endpoint = endpoint,
                                 sessionToken = sessionToken,
                                 authType = authType,
-                                customHeaders = server.customHeaders,
+                                customHeaders = customHeaders,
                                 loggerTag = TAG,
                                 block = wsBlock
                         )
                         // 连接正常关闭
                         sendEffect(SshTerminalContract.Effect.NavigateBack)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         Log.w(TAG, "WebSocket error: ${e.message}")
                         if (e.isSessionAuthError()) {
@@ -334,6 +379,31 @@ class SshTerminalViewModel(
     private fun normalizeSnippetContent(content: String): String =
             content.replace("\r\n", "\n").replace('\r', '\n')
 
+    private fun resizeMessage(cols: Int, rows: Int): String =
+            buildJsonObject {
+                        put("type", "resize")
+                        put("cols", cols)
+                        put("rows", rows)
+                    }
+                    .toString()
+
+    private fun enqueueMessage(message: WsOutMessage): Boolean {
+        val result = sendQueue.trySend(message)
+        if (result.isFailure) {
+            Log.e(TAG, "Terminal send queue closed or full; closing connection to preserve order")
+            setState {
+                copy(
+                        isConnecting = false,
+                        isConnected = false,
+                        error = "终端输入缓冲区已满，连接已关闭"
+                )
+            }
+            wsJob?.cancel()
+            return false
+        }
+        return true
+    }
+
     // ─── 内部类型 ───
 
     private sealed interface WsOutMessage {
@@ -349,6 +419,8 @@ class SshTerminalViewModel(
     class TerminalClientBridge : TerminalSessionClient {
 
         var onTextChanged: () -> Unit = {}
+        var onCopyText: (String) -> Unit = {}
+        var onPasteRequested: () -> Unit = {}
 
         override fun onTextChanged(changedSession: TerminalSession) = onTextChanged()
 
@@ -356,9 +428,9 @@ class SshTerminalViewModel(
 
         override fun onSessionFinished(finishedSession: TerminalSession) {}
 
-        override fun onCopyTextToClipboard(session: TerminalSession, text: String) {}
+        override fun onCopyTextToClipboard(session: TerminalSession, text: String) = onCopyText(text)
 
-        override fun onPasteTextFromClipboard(session: TerminalSession?) {}
+        override fun onPasteTextFromClipboard(session: TerminalSession?) = onPasteRequested()
 
         override fun onBell(session: TerminalSession) {}
 

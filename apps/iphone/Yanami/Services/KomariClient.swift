@@ -29,8 +29,7 @@ struct KomariClient {
             throw KomariClientError.invalidResponse
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/login", body: body)
+            throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/login")
         }
         if let token = extractSessionToken(from: httpResponse) {
             return token
@@ -83,7 +82,22 @@ struct KomariClient {
             token: token,
             responseType: LoadRecordsPayload.self
         )
-        return (result.records.matching(uuid: uuid) ?? []).map { $0.toDomain() }
+        let records = (result.records.matching(uuid: uuid) ?? []).sorted { $0.time < $1.time }
+        var previousTotalUp: Int64?
+        var previousTotalDown: Int64?
+        return records.map { record in
+            let trafficUp = max(
+                record.trafficUp ?? resetAwareTrafficDelta(previous: previousTotalUp, current: record.netTotalUp),
+                0
+            )
+            let trafficDown = max(
+                record.trafficDown ?? resetAwareTrafficDelta(previous: previousTotalDown, current: record.netTotalDown),
+                0
+            )
+            previousTotalUp = record.netTotalUp
+            previousTotalDown = record.netTotalDown
+            return record.toDomain(trafficUp: trafficUp, trafficDown: trafficDown)
+        }
     }
 
     func getPingRecords(token: String, uuid: String, hours: Int) async throws -> ([PingTask], [PingRecord]) {
@@ -111,14 +125,32 @@ struct KomariClient {
             throw KomariClientError.invalidResponse
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/recent/\(encodedUuid)", body: body)
+            throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/recent/\(encodedUuid)")
         }
         let payload = try Self.decoder.decode(RecentStatusResponse.self, from: data)
-        if payload.status == "error", let message = payload.message {
-            throw KomariClientError.rpc(message)
+        if payload.status == "error" {
+            throw KomariClientError.rpc(
+                Self.sanitizedServerMessage(payload.message, fallback: "Recent status API error")
+            )
         }
-        return (payload.data ?? []).map { $0.toDomain() }
+        let samples = (payload.data ?? []).sorted {
+            ($0.updatedAt ?? "") < ($1.updatedAt ?? "")
+        }
+        var previousTotalUp: Int64?
+        var previousTotalDown: Int64?
+        return samples.map { sample in
+            let trafficUp = resetAwareTrafficDelta(
+                previous: previousTotalUp,
+                current: sample.network?.totalUp
+            )
+            let trafficDown = resetAwareTrafficDelta(
+                previous: previousTotalDown,
+                current: sample.network?.totalDown
+            )
+            previousTotalUp = sample.network?.totalUp
+            previousTotalDown = sample.network?.totalDown
+            return sample.toDomain(trafficUp: trafficUp, trafficDown: trafficDown)
+        }
     }
 
     // MARK: - Admin Client API
@@ -165,18 +197,26 @@ struct KomariClient {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw KomariClientError.invalidResponse
         }
+        // Preserve authentication failures as typed errors so callers can safely
+        // refresh an expired password session without inspecting server messages.
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+            throw KomariClientError.httpStatus(httpResponse.statusCode, path: path)
+        }
         if (200...299).contains(httpResponse.statusCode),
            let env = try? Self.decoder.decode(AdminEnvelope.self, from: data),
            let status = env.status,
            status.localizedCaseInsensitiveCompare("error") == .orderedSame {
-            throw KomariClientError.rpc(env.message ?? "Admin API error")
+            throw KomariClientError.rpc(
+                Self.sanitizedServerMessage(env.message, fallback: "Admin API error")
+            )
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
             if let env = try? Self.decoder.decode(AdminEnvelope.self, from: data), let msg = env.message {
-                throw KomariClientError.rpc(msg)
+                throw KomariClientError.rpc(
+                    Self.sanitizedServerMessage(msg, fallback: "Admin API error")
+                )
             }
-            throw KomariClientError.httpStatus(httpResponse.statusCode, path: path, body: body)
+            throw KomariClientError.httpStatus(httpResponse.statusCode, path: path)
         }
     }
 
@@ -199,7 +239,10 @@ struct KomariClient {
                 name: (info.name ?? "").isEmpty ? uuid : info.name ?? uuid,
                 region: info.region ?? "",
                 group: info.group ?? "",
+                ipv4: info.ipv4 ?? "",
+                ipv6: info.ipv6 ?? "",
                 isOnline: status?.online ?? false,
+                statusTime: status?.time ?? "",
                 cpuUsage: status?.cpu ?? 0,
                 memUsed: status?.ram ?? 0,
                 memTotal: nonZero(status?.ramTotal, fallback: info.memTotal),
@@ -211,6 +254,8 @@ struct KomariClient {
                 netOut: status?.netOut ?? 0,
                 netTotalUp: status?.netTotalUp ?? 0,
                 netTotalDown: status?.netTotalDown ?? 0,
+                trafficUp: 0,
+                trafficDown: 0,
                 uptime: status?.uptime ?? 0,
                 os: info.os ?? "",
                 cpuName: info.cpuName ?? "",
@@ -220,7 +265,10 @@ struct KomariClient {
                 load5: status?.load5 ?? 0,
                 load15: status?.load15 ?? 0,
                 process: status?.process ?? 0,
-                connectionsTcp: status?.connections ?? 0,
+                connectionsTcp: latestTCPConnections(
+                    total: status?.connections,
+                    udp: status?.connectionsUdp
+                ),
                 connectionsUdp: status?.connectionsUdp ?? 0,
                 kernelVersion: info.kernelVersion ?? "",
                 virtualization: info.virtualization ?? "",
@@ -249,8 +297,20 @@ struct KomariClient {
                 offline.isOnline = false
                 return offline
             }
+            let incomingTime = (status.time ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard shouldAcceptStatusSample(
+                current: node,
+                incomingTime: incomingTime,
+                incomingUptime: status.uptime,
+                incomingTotalUp: status.netTotalUp,
+                incomingTotalDown: status.netTotalDown
+            ) else {
+                return node
+            }
+
             var updated = node
             updated.isOnline = status.online ?? false
+            updated.statusTime = incomingTime.isEmpty ? node.statusTime : incomingTime
             updated.cpuUsage = status.cpu ?? 0
             updated.memUsed = status.ram ?? 0
             updated.memTotal = nonZero(status.ramTotal, fallback: node.memTotal)
@@ -260,6 +320,14 @@ struct KomariClient {
             updated.diskTotal = nonZero(status.diskTotal, fallback: node.diskTotal)
             updated.netIn = status.netIn ?? 0
             updated.netOut = status.netOut ?? 0
+            updated.trafficUp = resetAwareTrafficDelta(
+                previous: node.netTotalUp,
+                current: status.netTotalUp
+            )
+            updated.trafficDown = resetAwareTrafficDelta(
+                previous: node.netTotalDown,
+                current: status.netTotalDown
+            )
             updated.netTotalUp = status.netTotalUp ?? 0
             updated.netTotalDown = status.netTotalDown ?? 0
             updated.uptime = status.uptime ?? 0
@@ -267,7 +335,10 @@ struct KomariClient {
             updated.load5 = status.load5 ?? 0
             updated.load15 = status.load15 ?? 0
             updated.process = status.process ?? 0
-            updated.connectionsTcp = status.connections ?? 0
+            updated.connectionsTcp = latestTCPConnections(
+                total: status.connections,
+                udp: status.connectionsUdp
+            )
             updated.connectionsUdp = status.connectionsUdp ?? 0
             return updated
         }
@@ -302,12 +373,19 @@ struct KomariClient {
             throw KomariClientError.invalidResponse
         }
         guard (200...299).contains(httpResponse.statusCode) else {
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/rpc2 (\(method))", body: body)
+            throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/rpc2 (\(method))")
         }
         let envelope = try Self.decoder.decode(RpcEnvelope<T>.self, from: data)
         if let error = envelope.error {
-            throw KomariClientError.rpc(error.message ?? "RPC error")
+            if let code = error.code, code == 401 || code == 403 {
+                throw KomariClientError.httpStatus(
+                    code,
+                    path: "/api/rpc2 (\(method))"
+                )
+            }
+            throw KomariClientError.rpc(
+                Self.sanitizedServerMessage(error.message, fallback: "RPC error")
+            )
         }
         guard let result = envelope.result else {
             throw KomariClientError.invalidResponse
@@ -321,12 +399,13 @@ struct KomariClient {
         jsonBody: [String: Any]? = nil,
         token: String? = nil
     ) throws -> URLRequest {
-        guard let url = URL(string: profile.normalizedBaseURL + path) else {
+        guard profile.validatedBaseURL != nil,
+              let url = URL(string: profile.normalizedBaseURL + path) else {
             throw KomariClientError.invalidConfiguration("Server URL is invalid")
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.setValue("YanamiNext-iPhone/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppMetadata.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
         profile.sanitizedCustomHeaders.forEach { header in
@@ -355,11 +434,19 @@ struct KomariClient {
     }
 
     private func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        guard profile.allowInsecureTLS else {
-            return try await URLSession.shared.data(for: request)
-        }
-        let delegate = KomariInsecureTLSDelegate(allowedHost: request.url?.host)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+
+        let delegate = KomariSessionDelegate(
+            allowInsecureTLS: profile.allowInsecureTLS,
+            allowedHost: request.url?.host
+        )
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         return try await session.data(for: request)
     }
@@ -389,6 +476,18 @@ struct KomariClient {
         return candidate > 0 ? candidate : fallback ?? 0
     }
 
+    private static func sanitizedServerMessage(_ message: String?, fallback: String) -> String {
+        guard let message else { return fallback }
+        let boundedInput = String(message.prefix(2_048))
+        let singleLine = boundedInput
+            .components(separatedBy: .controlCharacters)
+            .joined(separator: " ")
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        let boundedOutput = String(singleLine.prefix(512))
+        return boundedOutput.isEmpty ? fallback : boundedOutput
+    }
+
     private static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -396,11 +495,24 @@ struct KomariClient {
     }()
 }
 
-final class KomariInsecureTLSDelegate: NSObject, URLSessionDelegate {
+final class KomariSessionDelegate: NSObject, URLSessionTaskDelegate {
+    private let allowInsecureTLS: Bool
     private let allowedHost: String?
 
-    init(allowedHost: String?) {
+    init(allowInsecureTLS: Bool, allowedHost: String?) {
+        self.allowInsecureTLS = allowInsecureTLS
         self.allowedHost = allowedHost?.lowercased()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        // Never forward cookies, bearer tokens, or custom access headers to a redirect target.
+        completionHandler(nil)
     }
 
     func urlSession(
@@ -408,7 +520,8 @@ final class KomariInsecureTLSDelegate: NSObject, URLSessionDelegate {
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+        guard allowInsecureTLS,
+              challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let serverTrust = challenge.protectionSpace.serverTrust,
               isAllowedHost(challenge.protectionSpace.host) else {
             completionHandler(.performDefaultHandling, nil)
@@ -426,9 +539,16 @@ final class KomariInsecureTLSDelegate: NSObject, URLSessionDelegate {
 enum KomariClientError: LocalizedError {
     case invalidConfiguration(String)
     case invalidResponse
-    case httpStatus(Int, path: String, body: String)
+    case httpStatus(Int, path: String)
     case rpc(String)
     case requires2FA
+
+    /// A deliberately narrow signal for retrying expired password sessions.
+    /// Callers must not infer authentication failures from untrusted response text.
+    var isAuthenticationFailure: Bool {
+        guard case .httpStatus(let status, _) = self else { return false }
+        return status == 401 || status == 403
+    }
 
     var errorDescription: String? {
         switch self {
@@ -436,8 +556,8 @@ enum KomariClientError: LocalizedError {
             return message
         case .invalidResponse:
             return "Invalid server response"
-        case .httpStatus(let status, let path, let body):
-            return "HTTP \(status) at \(path): \(body)"
+        case .httpStatus(let status, let path):
+            return "HTTP \(status) at \(path)"
         case .rpc(let message):
             return message
         case .requires2FA:
@@ -481,6 +601,8 @@ struct NodeInfoPayload: Decodable {
     let kernelVersion: String?
     let gpuName: String?
     let region: String?
+    let ipv4: String?
+    let ipv6: String?
     let memTotal: Int64?
     let swapTotal: Int64?
     let diskTotal: Int64?
@@ -511,6 +633,7 @@ struct NodeStatusPayload: Decodable {
     let connectionsUdp: Int?
     let uptime: Int64?
     let online: Bool?
+    let time: String?
 }
 
 private struct LoadRecordsPayload: Decodable {
@@ -526,12 +649,16 @@ private struct LoadRecordPayload: Decodable {
     let diskTotal: Int64?
     let netIn: Int64?
     let netOut: Int64?
+    let netTotalUp: Int64?
+    let netTotalDown: Int64?
+    let trafficUp: Int64?
+    let trafficDown: Int64?
     let load: Double?
     let process: Int?
     let connections: Int?
     let connectionsUdp: Int?
 
-    func toDomain() -> LoadRecord {
+    func toDomain(trafficUp: Int64, trafficDown: Int64) -> LoadRecord {
         LoadRecord(
             time: time,
             cpu: cpu ?? 0,
@@ -539,6 +666,10 @@ private struct LoadRecordPayload: Decodable {
             diskPercent: percent(used: disk, total: diskTotal),
             netIn: netIn ?? 0,
             netOut: netOut ?? 0,
+            netTotalUp: netTotalUp ?? 0,
+            netTotalDown: netTotalDown ?? 0,
+            trafficUp: trafficUp,
+            trafficDown: trafficDown,
             load: load ?? 0,
             process: process ?? 0,
             connections: connections ?? 0,
@@ -600,7 +731,12 @@ private struct RecentStatusResponse: Decodable {
 private struct RecentCpuPayload: Decodable { let usage: Double? }
 private struct RecentUsedTotalPayload: Decodable { let total: Int64?; let used: Int64? }
 private struct RecentLoadPayload: Decodable { let load1: Double? }
-private struct RecentNetworkPayload: Decodable { let up: Int64?; let down: Int64? }
+private struct RecentNetworkPayload: Decodable {
+    let up: Int64?
+    let down: Int64?
+    let totalUp: Int64?
+    let totalDown: Int64?
+}
 private struct RecentConnectionsPayload: Decodable { let tcp: Int?; let udp: Int? }
 
 private struct RecentStatusItemPayload: Decodable {
@@ -613,7 +749,7 @@ private struct RecentStatusItemPayload: Decodable {
     let connections: RecentConnectionsPayload?
     let updatedAt: String?
 
-    func toDomain() -> LoadRecord {
+    func toDomain(trafficUp: Int64, trafficDown: Int64) -> LoadRecord {
         LoadRecord(
             time: updatedAt ?? "",
             cpu: cpu?.usage ?? 0,
@@ -621,6 +757,10 @@ private struct RecentStatusItemPayload: Decodable {
             diskPercent: percent(used: disk?.used, total: disk?.total),
             netIn: network?.down ?? 0,
             netOut: network?.up ?? 0,
+            netTotalUp: network?.totalUp ?? 0,
+            netTotalDown: network?.totalDown ?? 0,
+            trafficUp: trafficUp,
+            trafficDown: trafficDown,
             load: load?.load1 ?? 0,
             process: process ?? 0,
             connections: connections?.tcp ?? 0,
@@ -632,6 +772,10 @@ private struct RecentStatusItemPayload: Decodable {
 private func percent(used: Int64?, total: Int64?) -> Double {
     guard let used, let total, total > 0 else { return 0 }
     return Double(used) / Double(total) * 100
+}
+
+private func latestTCPConnections(total: Int?, udp: Int?) -> Int {
+    max(0, (total ?? 0) - (udp ?? 0))
 }
 
 private extension Dictionary where Key == String {

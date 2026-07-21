@@ -37,6 +37,7 @@ import com.sekusarisu.yanami.ui.screen.soundClick
 internal fun NodeDetailContent(
         state: NodeDetailContract.State,
         chartAnimationEnabled: Boolean,
+        maskIpAddresses: Boolean = false,
         isTabletLandscape: Boolean,
         onLoadHoursChanged: (Int) -> Unit,
         onPingHoursChanged: (Int) -> Unit
@@ -56,7 +57,7 @@ internal fun NodeDetailContent(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item { Spacer(modifier = Modifier.height(4.dp)) }
-            item { ServerInfoCard(node) }
+            item { ServerInfoCard(node, maskIpAddresses) }
             item {
                 ChartSectionHeader(
                         title = stringResource(R.string.node_detail_load_chart),
@@ -145,18 +146,42 @@ internal fun NodeDetailContent(
                         )
                     }
                     item {
+                        WideChartRow(
+                                first = {
+                                    NetworkChartCard(
+                                            title = stringResource(R.string.node_net_interval_traffic),
+                                            netInData = loadChartData.trafficDownSeries,
+                                            netOutData = loadChartData.trafficUpSeries,
+                                            times = loadChartData.timeLabels,
+                                            chartAnimationEnabled = chartAnimationEnabled,
+                                            showAsSpeed = false
+                                    )
+                                },
+                                second = {
+                                    ChartCard(
+                                            title = stringResource(R.string.node_detail_process),
+                                            data = loadChartData.processSeries,
+                                            times = loadChartData.timeLabels,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            suffix = "",
+                                            chartAnimationEnabled = chartAnimationEnabled
+                                    )
+                                }
+                        )
+                    }
+                } else {
+                    item {
                         ChartSectionSurface {
-                            ChartCard(
-                                    title = stringResource(R.string.node_detail_process),
-                                    data = loadChartData.processSeries,
+                            NetworkChartCard(
+                                    title = stringResource(R.string.node_net_interval_traffic),
+                                    netInData = loadChartData.trafficDownSeries,
+                                    netOutData = loadChartData.trafficUpSeries,
                                     times = loadChartData.timeLabels,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    suffix = "",
-                                    chartAnimationEnabled = chartAnimationEnabled
+                                    chartAnimationEnabled = chartAnimationEnabled,
+                                    showAsSpeed = false
                             )
                         }
                     }
-                } else {
                     item {
                         ChartSectionSurface {
                             ChartCard(

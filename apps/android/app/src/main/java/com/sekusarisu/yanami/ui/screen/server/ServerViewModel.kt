@@ -3,6 +3,8 @@ package com.sekusarisu.yanami.ui.screen.server
 import android.content.Context
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
+import com.sekusarisu.yanami.data.remote.isAllowedCustomHeaderName
+import com.sekusarisu.yanami.data.remote.normalizeServerBaseUrl
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.ServerInstance
@@ -204,6 +206,8 @@ class AddServerViewModel(
             }
         }
 
+        val normalizedBaseUrl = validateBaseUrl(state.baseUrl) ?: return
+
         setState { copy(isTesting = true, testResult = null, testError = null) }
 
         screenModelScope.launch {
@@ -212,19 +216,19 @@ class AddServerViewModel(
                         when (state.authType) {
                             AuthType.GUEST ->
                                     repository.testConnectionAsGuest(
-                                            state.baseUrl,
+                                            normalizedBaseUrl,
                                             customHeaders
                                     )
                             AuthType.API_KEY ->
                                     repository.testConnectionWithApiKey(
-                                            state.baseUrl,
+                                            normalizedBaseUrl,
                                             state.apiKey,
                                             customHeaders
                                     )
                             AuthType.PASSWORD -> {
                                 val twoFaCode = state.twoFaCode.ifBlank { null }
                                 repository.testConnection(
-                                        state.baseUrl,
+                                        normalizedBaseUrl,
                                         state.username,
                                         state.password,
                                         twoFaCode,
@@ -309,6 +313,8 @@ class AddServerViewModel(
             }
         }
 
+        val normalizedBaseUrl = validateBaseUrl(state.baseUrl) ?: return
+
         setState { copy(isSaving = true) }
 
         screenModelScope.launch {
@@ -316,7 +322,7 @@ class AddServerViewModel(
                 val normalizedInstance =
                         ServerInstance(
                                 name = state.name.trim(),
-                                baseUrl = state.baseUrl.trim().trimEnd('/'),
+                                baseUrl = normalizedBaseUrl,
                                 username = state.username.trim(),
                                 password = state.password,
                                 requires2fa = state.show2faField,
@@ -418,6 +424,12 @@ class AddServerViewModel(
                     context.getString(R.string.add_server_header_name_invalid, invalidName.name)
             )
         }
+        val reservedName = normalized.firstOrNull { !isAllowedCustomHeaderName(it.name) }
+        if (reservedName != null) {
+            throw IllegalArgumentException(
+                    context.getString(R.string.add_server_header_name_reserved, reservedName.name)
+            )
+        }
         val duplicateName =
                 normalized.groupBy { it.name.lowercase() }.values.firstOrNull { it.size > 1 }
         if (duplicateName != null) {
@@ -446,6 +458,19 @@ class AddServerViewModel(
             "cf-access-client-id" !in existingNames -> "CF-Access-Client-Id"
             "cf-access-client-secret" !in existingNames -> "CF-Access-Client-Secret"
             else -> ""
+        }
+    }
+
+    private fun validateBaseUrl(rawValue: String): String? {
+        return try {
+            normalizeServerBaseUrl(rawValue)
+        } catch (_: IllegalArgumentException) {
+            sendEffect(
+                    ServerContract.Effect.ShowToast(
+                            context.getString(R.string.add_server_url_invalid)
+                    )
+            )
+            null
         }
     }
 }

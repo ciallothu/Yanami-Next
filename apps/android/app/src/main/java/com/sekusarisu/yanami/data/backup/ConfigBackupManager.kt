@@ -3,11 +3,15 @@ package com.sekusarisu.yanami.data.backup
 import android.content.Context
 import android.net.Uri
 import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
+import com.sekusarisu.yanami.data.remote.isAllowedCustomHeaderName
+import com.sekusarisu.yanami.data.remote.normalizeServerBaseUrl
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.ServerInstance
 import com.sekusarisu.yanami.domain.model.TerminalSnippet
 import com.sekusarisu.yanami.domain.repository.ServerRepository
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -22,15 +26,16 @@ class ConfigBackupManager(
         ignoreUnknownKeys = true
         prettyPrint = true
         encodeDefaults = true
+        explicitNulls = false
     }
 
     suspend fun exportToUri(uri: Uri): ConfigExportSummary {
         val servers = serverRepository.getAll()
-        val snippets = userPreferencesRepository.terminalSnippets.first()
         val backup =
                 ConfigBackup(
                         servers = servers.map { it.toBackupServer() },
-                        snippets = snippets
+                        // Snippets frequently contain access tokens or private commands.
+                        snippets = emptyList()
                 )
 
         val content = json.encodeToString(backup)
@@ -38,18 +43,27 @@ class ConfigBackupManager(
             writer.write(content)
         } ?: throw IllegalStateException("Unable to open output stream")
 
-        return ConfigExportSummary(serverCount = servers.size, snippetCount = snippets.size)
+        return ConfigExportSummary(serverCount = servers.size, snippetCount = 0)
     }
 
     suspend fun importFromUri(uri: Uri): ConfigImportSummary {
         val content =
-                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { reader ->
-                    reader.readText()
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    input.readUtf8WithLimit(MAX_BACKUP_BYTES)
                 } ?: throw IllegalStateException("Unable to open input stream")
 
         val backup = json.decodeFromString<ConfigBackup>(content)
-        require(backup.version == ConfigBackup.CURRENT_VERSION) {
+        require(backup.version in 1..ConfigBackup.CURRENT_VERSION) {
             "Unsupported backup version: ${backup.version}"
+        }
+        require(backup.servers.size <= MAX_BACKUP_SERVERS) {
+            "Backup contains too many servers"
+        }
+        require(backup.snippets.size <= MAX_BACKUP_SNIPPETS) {
+            "Backup contains too many terminal snippets"
+        }
+        require(backup.servers.all { it.customHeaders.size <= MAX_CUSTOM_HEADERS_PER_SERVER }) {
+            "Backup contains too many custom headers"
         }
 
         val existingServers = serverRepository.getAll()
@@ -76,12 +90,15 @@ class ConfigBackupManager(
                                 name = normalizedServer.name,
                                 baseUrl = normalizedServer.baseUrl,
                                 username = normalizedServer.username,
-                                password = normalizedServer.password,
-                                sessionToken = normalizedServer.sessionToken,
+                                password = normalizedServer.password.ifBlank { existing.password },
+                                sessionToken = existing.sessionToken,
                                 requires2fa = normalizedServer.requires2fa,
                                 authType = normalizedServer.authType,
-                                apiKey = normalizedServer.apiKey,
-                                customHeaders = normalizedServer.customHeaders
+                                apiKey = normalizedServer.apiKey ?: existing.apiKey,
+                                customHeaders =
+                                        normalizedServer.customHeaders.ifEmpty {
+                                            existing.customHeaders
+                                        }
                         )
                 serverRepository.update(updated)
                 existingServersByKey[updated.mergeKey()] = updated
@@ -164,20 +181,22 @@ class ConfigBackupManager(
                 name = name,
                 baseUrl = baseUrl.trim().trimEnd('/'),
                 username = username.trim(),
-                password = password,
-                sessionToken = sessionToken,
+                password = "",
+                // Session tokens are short-lived bearer credentials and must not leave the app.
+                sessionToken = null,
                 requires2fa = requires2fa,
                 isActive = isActive,
                 createdAt = createdAt,
                 authType = authType,
-                apiKey = apiKey,
-                customHeaders = customHeaders
+                apiKey = null,
+                customHeaders = emptyList()
         )
     }
 
     private fun BackupServer.toValidatedServerOrNull(): ServerInstance? {
         val normalizedName = name.trim()
-        val normalizedBaseUrl = baseUrl.trim().trimEnd('/')
+        val normalizedBaseUrl =
+                runCatching { normalizeServerBaseUrl(baseUrl) }.getOrNull() ?: return null
         val normalizedUsername = username.trim()
         val normalizedApiKey = apiKey?.trim()?.ifBlank { null }
         val normalizedCustomHeaders = customHeaders.normalizedCustomHeaders()
@@ -188,7 +207,7 @@ class ConfigBackupManager(
 
         return when (authType) {
             AuthType.PASSWORD -> {
-                if (normalizedUsername.isBlank() || password.isBlank()) {
+                if (normalizedUsername.isBlank()) {
                     null
                 } else {
                     ServerInstance(
@@ -196,7 +215,7 @@ class ConfigBackupManager(
                             baseUrl = normalizedBaseUrl,
                             username = normalizedUsername,
                             password = password,
-                            sessionToken = sessionToken,
+                            sessionToken = null,
                             requires2fa = requires2fa,
                             isActive = false,
                             createdAt = createdAt,
@@ -207,15 +226,12 @@ class ConfigBackupManager(
                 }
             }
             AuthType.API_KEY -> {
-                if (normalizedApiKey.isNullOrBlank()) {
-                    null
-                } else {
-                    ServerInstance(
+                ServerInstance(
                             name = normalizedName,
                             baseUrl = normalizedBaseUrl,
                             username = normalizedUsername,
                             password = "",
-                            sessionToken = sessionToken,
+                            sessionToken = null,
                             requires2fa = false,
                             isActive = false,
                             createdAt = createdAt,
@@ -223,7 +239,6 @@ class ConfigBackupManager(
                             apiKey = normalizedApiKey,
                             customHeaders = normalizedCustomHeaders
                     )
-                }
             }
             AuthType.GUEST -> {
                 ServerInstance(
@@ -231,7 +246,7 @@ class ConfigBackupManager(
                         baseUrl = normalizedBaseUrl,
                         username = "",
                         password = "",
-                        sessionToken = sessionToken,
+                        sessionToken = null,
                         requires2fa = false,
                         isActive = false,
                         createdAt = createdAt,
@@ -268,7 +283,38 @@ class ConfigBackupManager(
 
     private fun List<CustomHeader>.normalizedCustomHeaders(): List<CustomHeader> {
         return map { CustomHeader(it.name.trim(), it.value.trim()) }
-                .filter { it.name.isNotBlank() && it.value.isNotBlank() }
+                .filter {
+                    it.name.isNotBlank() &&
+                            it.value.isNotBlank() &&
+                            isAllowedCustomHeaderName(it.name) &&
+                            it.name.length <= MAX_HEADER_NAME_LENGTH &&
+                            it.value.length <= MAX_HEADER_VALUE_LENGTH &&
+                            it.value.none { char -> char == '\r' || char == '\n' || char == '\u0000' }
+                }
                 .distinctBy { it.name.lowercase() }
+    }
+
+    private fun InputStream.readUtf8WithLimit(maxBytes: Int): String {
+        val output = ByteArrayOutputStream(minOf(maxBytes, READ_BUFFER_SIZE))
+        val buffer = ByteArray(READ_BUFFER_SIZE)
+        var totalBytes = 0
+        while (true) {
+            val bytesRead = read(buffer)
+            if (bytesRead == -1) break
+            totalBytes += bytesRead
+            require(totalBytes <= maxBytes) { "Backup file is too large" }
+            output.write(buffer, 0, bytesRead)
+        }
+        return output.toString(Charsets.UTF_8.name())
+    }
+
+    private companion object {
+        const val MAX_BACKUP_BYTES = 5 * 1024 * 1024
+        const val MAX_BACKUP_SERVERS = 500
+        const val MAX_BACKUP_SNIPPETS = 1_000
+        const val MAX_CUSTOM_HEADERS_PER_SERVER = 64
+        const val MAX_HEADER_NAME_LENGTH = 128
+        const val MAX_HEADER_VALUE_LENGTH = 8 * 1024
+        const val READ_BUFFER_SIZE = 8 * 1024
     }
 }

@@ -164,13 +164,15 @@ class PingTaskManagementViewModel(
                     clientRepository.listClients(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
-                        authType = server.authType
+                        authType = server.authType,
+                        customHeaders = server.customHeaders.toList()
                     )
                 val tasks =
                     pingTaskRepository.listPingTasks(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
-                        authType = server.authType
+                        authType = server.authType,
+                        customHeaders = server.customHeaders.toList()
                     )
                 hasLoadedOnce = true
                 updateLoadedState(server, clients, tasks)
@@ -200,13 +202,15 @@ class PingTaskManagementViewModel(
                     clientRepository.listClients(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
-                        authType = server.authType
+                        authType = server.authType,
+                        customHeaders = server.customHeaders.toList()
                     )
                 val tasks =
                     pingTaskRepository.listPingTasks(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
-                        authType = server.authType
+                        authType = server.authType,
+                        customHeaders = server.customHeaders.toList()
                     )
                 hasLoadedOnce = true
                 updateLoadedState(server, clients, tasks)
@@ -296,6 +300,7 @@ class PingTaskManagementViewModel(
                             baseUrl = server.baseUrl,
                             sessionToken = sessionToken,
                             authType = server.authType,
+                            customHeaders = server.customHeaders.toList(),
                             draft = editor.draft
                         )
                         sendEffect(
@@ -313,6 +318,7 @@ class PingTaskManagementViewModel(
                             baseUrl = server.baseUrl,
                             sessionToken = sessionToken,
                             authType = server.authType,
+                            customHeaders = server.customHeaders.toList(),
                             tasks = listOf(editor.draft.applyTo(originalTask))
                         )
                         sendEffect(
@@ -350,6 +356,7 @@ class PingTaskManagementViewModel(
                     baseUrl = server.baseUrl,
                     sessionToken = sessionToken,
                     authType = server.authType,
+                    customHeaders = server.customHeaders.toList(),
                     ids = listOf(target.id)
                 )
                 setState { copy(isSaving = false) }
@@ -413,6 +420,7 @@ class PingTaskManagementViewModel(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
                         authType = server.authType,
+                        customHeaders = server.customHeaders.toList(),
                         tasks = updatedTasks
                     )
                 }
@@ -462,6 +470,7 @@ class PingTaskManagementViewModel(
                     baseUrl = server.baseUrl,
                     sessionToken = sessionToken,
                     authType = server.authType,
+                    customHeaders = server.customHeaders.toList(),
                     weights = reorderedWeights.toMap()
                 )
                 setState { copy(isReordering = false) }
@@ -499,6 +508,7 @@ class PingTaskManagementViewModel(
                     baseUrl = server.baseUrl,
                     sessionToken = sessionToken,
                     authType = server.authType,
+                    customHeaders = server.customHeaders.toList(),
                     weights = mapOf(current.id to target.weight, target.id to current.weight)
                 )
                 setState { copy(isReordering = false) }

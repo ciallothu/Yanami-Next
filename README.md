@@ -1,15 +1,15 @@
 English | [简体中文](README_zh.md)
 
-# YanamiNext
+# Yanami-Next
 
-![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fciallothu%2FYanamiNext&label=ciallothu%2FYanamiNext&icon=github&color=%23feb272&message=&style=flat&tz=UTC)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ciallothu/YanamiNext)
+![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fciallothu%2FYanami-Next&label=ciallothu%2FYanami-Next&icon=github&color=%23feb272&message=&style=flat&tz=UTC)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ciallothu/Yanami-Next)
 
 <p style="text-align: center;">
     <img alt="banner" src="docs/assets/banner.png">
 </p>
 
-**YanamiNext** supports Android & iPhone for the [Komari](https://github.com/komari-monitor/komari) server monitoring tool. The Android app is built with Material Design 3, and the iPhone app is built with SwiftUI.
+**Yanami Next** supports Android & iPhone for the [Komari](https://github.com/komari-monitor/komari) server monitoring tool. The repository is named `Yanami-Next`; the Android app is built with Material Design 3, and the iPhone app is built with SwiftUI.
 
 > A Komari client that supports Android & iPhone.
 
@@ -20,10 +20,10 @@ English | [简体中文](README_zh.md)
 - **Multi-Instance Management** — Add, edit, and switch between multiple Komari server instances.
 - **Three Authentication Modes** — Support password, API Key, and guest mode authentication.
 - **Real-Time Node List** — WebSocket real-time push for node status (CPU / RAM / Disk / Network IO).
-- **Node Detail Dashboard** — Load history line charts, Ping latency trends, basic server information.
-- **SSH Terminal** — Full-featured ANSI/VT100 terminal based on termux terminal-view + WebSocket, supporting special key toolbars and font size adjustment.
+- **Node Detail Dashboard** — Load history, Ping trends, IPv4/IPv6, network speed, interval traffic, and cumulative traffic usage.
+- **SSH Terminal** — Native terminal engines on both platforms with scrollback, selection, composed text input, special keys, and WebSocket resize synchronization.
 - **Home Screen Widget** — Glance widget for node overview, refresh, and update interval configuration.
-- **iPhone App Preview** — Native SwiftUI iPhone app with multi-instance management, password / API Key / guest mode, custom HTTP headers, auto-refreshing node list, node detail, load and ping records.
+- **iPhone App** — Native SwiftUI client with multi-instance management, password / API Key / guest mode, custom HTTP headers, auto-refreshing node list, node detail, load and ping records.
 - **Tablet Landscape Layout** — Adaptive large-screen layout with NavigationRail, multi-column lists, and split detail panels.
 - **Multi-Language Support** — Chinese (Default), English, Japanese.
 - **Theme System** — Material You dynamic colors (Android 12+) + 6 preset color palettes, supporting dark/light mode and system-following mode.
@@ -103,12 +103,8 @@ English | [简体中文](README_zh.md)
 (cd apps/android && ./gradlew clean assembleDebug)
 
 # Unsigned iPhone IPA
-BUILD_NUMBER=${GITHUB_RUN_NUMBER:-1}
-BRANCH_REF=${GITHUB_REF_NAME:-local}
-BRANCH_VERSION=$(printf '%s' "$BRANCH_REF" | tr '[:upper:]' '[:lower:]' | tr '/' '-' | sed -E 's/[^a-z0-9._-]+/-/g; s/-+/-/g; s/^-//; s/-$//')
-SHORT_SHA=${GITHUB_SHA:-local}
-SHORT_SHA=${SHORT_SHA:0:7}
-VERSION="YanamiNext-Build-${BRANCH_VERSION:-local}-${SHORT_SHA}"
+VERSION=$(tr -d '[:space:]' < VERSION)
+BUILD_NUMBER=$(tr -d '[:space:]' < VERSION_CODE)
 xcodebuild \
   -project apps/iphone/Yanami.xcodeproj \
   -scheme Yanami \
@@ -121,15 +117,15 @@ xcodebuild \
   CODE_SIGN_IDENTITY="" \
   DEVELOPMENT_TEAM="" \
   PROVISIONING_PROFILE_SPECIFIER="" \
-  MARKETING_VERSION="1.0" \
+  MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   build
 mkdir -p build/ios-ipa/Payload
-ditto build/ios/Build/Products/Release-iphoneos/Yanami.app build/ios-ipa/Payload/YanamiNext.app
-(cd build/ios-ipa && ditto -c -k --sequesterRsrc --keepParent Payload "../${VERSION}.ipa")
+ditto build/ios/Build/Products/Release-iphoneos/Yanami.app "build/ios-ipa/Payload/Yanami Next.app"
+(cd build/ios-ipa && ditto -c -k --sequesterRsrc --keepParent Payload "../Yanami-Next-v${VERSION}-unsigned.ipa")
 ```
 
-Android build outputs are located at `apps/android/app/build/outputs/apk/`. CI pre-release assets use `YanamiNext-Build-<branch>-<short-sha>`; the unsigned iPhone IPA is generated at `build/YanamiNext-Build-<branch>-<short-sha>.ipa` and must be signed by the installer before device installation.
+Android build outputs are located at `apps/android/app/build/outputs/apk/`. The app version is sourced from `VERSION` and the build number from `VERSION_CODE` on both platforms. The unsigned iPhone IPA must be signed before device installation.
 
 ## Tech Stack
 
@@ -145,7 +141,7 @@ Android build outputs are located at `apps/android/app/build/outputs/apk/`. CI p
 | Ktor | 3.4.1 | HTTP Client + WebSocket |
 | Room | 2.8.4 | Local Database (Encrypted credential storage) |
 | Vico | 3.0.3 | Charts (Compose M3) |
-| termux terminal-view | 0.119.0-beta.3 | Terminal ANSI/VT100 Rendering |
+| Termux terminal-view + terminal-emulator | 0.119.0-beta.3 (`e634d8f`) | Vendored terminal rendering and remote transport |
 | DataStore Preferences | 1.2.0 | User Preferences Persistence |
 
 ## Architecture
@@ -177,7 +173,7 @@ ServerListScreen → AddServerScreen
 - **GUEST** — No authentication header; monitor APIs and WebSocket data remain available, but SSH terminal is disabled.
 - Credentials and session data are encrypted with AES/GCM and stored in Room, automatically restored on startup.
 - WebSocket (`wss://host/api/rpc2`) always requires the `Origin` header.
-- `SessionCookieInterceptor` / network layer automatically inject Cookie, Bearer token, or skip auth headers according to `authType`.
+- Every request explicitly carries the immutable authentication context and custom headers for its own server, preventing credentials from leaking across concurrent server sessions.
 
 ### Adaptive Layout
 

@@ -53,6 +53,7 @@ class ClientCreateScreen : Screen {
         val navigator = LocalNavigator.currentOrThrow
         val context = LocalContext.current
         val clipboard = LocalClipboardManager.current
+        val tokenCopiedMessage = stringResource(R.string.client_management_token_copied)
 
         LaunchedEffect(Unit) {
             viewModel.effect.collect { effect ->
@@ -146,9 +147,7 @@ class ClientCreateScreen : Screen {
                                     clipboard.setText(AnnotatedString(result.token))
                                     Toast.makeText(
                                                     context,
-                                                    context.getString(
-                                                            R.string.client_management_token_copied
-                                                    ),
+                                                    tokenCopiedMessage,
                                                     Toast.LENGTH_SHORT
                                             )
                                             .show()

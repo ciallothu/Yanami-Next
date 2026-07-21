@@ -12,8 +12,6 @@ import com.sekusarisu.yanami.data.remote.KomariAdminClientService
 import com.sekusarisu.yanami.data.remote.KomariAdminPingService
 import com.sekusarisu.yanami.data.remote.KomariAuthService
 import com.sekusarisu.yanami.data.remote.KomariRpcService
-import com.sekusarisu.yanami.data.remote.SessionCookieInterceptor
-import com.sekusarisu.yanami.data.remote.SessionManager
 import com.sekusarisu.yanami.data.remote.UpdateCheckService
 import com.sekusarisu.yanami.data.repository.ClientRepositoryImpl
 import com.sekusarisu.yanami.data.repository.NodeRepositoryImpl
@@ -42,6 +40,7 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import org.koin.android.ext.koin.androidContext
@@ -49,14 +48,15 @@ import org.koin.dsl.module
 
 val appModule = module {
 
-    // ─── Session ───
-    single { SessionManager() }
-
     // ─── Network ───
     single {
-        val sessionManager = get<SessionManager>()
         HttpClient(OkHttp) {
-            engine { addInterceptor(SessionCookieInterceptor(sessionManager)) }
+            // Disable redirects at Ktor's client layer as well as in OkHttp so credentials are
+            // never replayed to a redirect target by either implementation.
+            followRedirects = false
+            engine {
+                config { followRedirects(false) }
+            }
             install(ContentNegotiation) {
                 json(
                         Json {
@@ -73,7 +73,9 @@ val appModule = module {
                 socketTimeoutMillis = 15_000
             }
             install(Logging) {
-                level = if (BuildConfig.DEBUG) LogLevel.BODY else LogLevel.NONE
+                // Distributable debug builds must never expose credentials or response payloads.
+                level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
+                sanitizeHeader { header -> isSensitiveHeader(header) }
             }
         }
     }
@@ -96,7 +98,7 @@ val appModule = module {
 
     // ─── Remote Service ───
     single { KomariAuthService(get()) }
-    single { KomariRpcService(get(), get()) }
+    single { KomariRpcService(get()) }
     single { KomariAdminClientService(get()) }
     single { KomariAdminPingService(get()) }
     single { UpdateCheckService() }
@@ -107,8 +109,7 @@ val appModule = module {
                 dao = get(),
                 cryptoManager = get(),
                 authService = get(),
-                rpcService = get(),
-                sessionManager = get()
+                rpcService = get()
         )
     }
     single<NodeRepository> { NodeRepositoryImpl(rpcService = get()) }
@@ -128,6 +129,16 @@ val appModule = module {
     factory { (uuid: String) -> ClientEditViewModel(uuid, get(), get(), androidContext()) }
     factory { SettingsViewModel(get(), get(), androidContext()) }
     factory { AboutViewModel(get(), androidContext()) }
-    factory { (uuid: String) -> NodeDetailViewModel(uuid, get(), get(), get(), androidContext()) }
-    factory { (uuid: String) -> SshTerminalViewModel(uuid, get(), get(), get(), get()) }
+    factory { (uuid: String) -> NodeDetailViewModel(uuid, get(), get(), androidContext()) }
+    factory { (uuid: String) -> SshTerminalViewModel(uuid, get(), get(), get()) }
+}
+
+private fun isSensitiveHeader(name: String): Boolean {
+    val normalized = name.lowercase()
+    return name.equals(HttpHeaders.Authorization, ignoreCase = true) ||
+            name.equals(HttpHeaders.ProxyAuthorization, ignoreCase = true) ||
+            name.equals(HttpHeaders.Cookie, ignoreCase = true) ||
+            name.equals(HttpHeaders.SetCookie, ignoreCase = true) ||
+            listOf("auth", "cookie", "token", "secret", "api-key", "api_key", "apikey")
+                    .any(normalized::contains)
 }

@@ -26,6 +26,7 @@ data class SettingsState(
         val autoEnterNodeList: Boolean = false,
         val chartAnimationEnabled: Boolean = true,
         val biometricEnabled: Boolean = false,
+        val maskIpEnabled: Boolean = false,
         val isBackupInProgress: Boolean = false
 ) : UiState
 
@@ -38,6 +39,7 @@ sealed interface SettingsEvent : UiEvent {
     data class SetAutoEnterNodeList(val enabled: Boolean) : SettingsEvent
     data class SetChartAnimation(val enabled: Boolean) : SettingsEvent
     data class SetBiometricEnabled(val enabled: Boolean) : SettingsEvent
+    data class SetMaskIpEnabled(val enabled: Boolean) : SettingsEvent
 }
 
 /** 设置页面 Effects */
@@ -65,7 +67,8 @@ class SettingsViewModel(
                                 fontScale = prefs.fontScale,
                                 autoEnterNodeList = prefs.autoEnterNodeList,
                                 chartAnimationEnabled = prefs.chartAnimationEnabled,
-                                biometricEnabled = prefs.biometricEnabled
+                                biometricEnabled = prefs.biometricEnabled,
+                                maskIpEnabled = prefs.maskIpEnabled
                         )
                     }
                 }
@@ -97,6 +100,9 @@ class SettingsViewModel(
             }
             is SettingsEvent.SetBiometricEnabled -> {
                 screenModelScope.launch { prefsRepo.setBiometricEnabled(event.enabled) }
+            }
+            is SettingsEvent.SetMaskIpEnabled -> {
+                screenModelScope.launch { prefsRepo.setMaskIpEnabled(event.enabled) }
             }
         }
     }

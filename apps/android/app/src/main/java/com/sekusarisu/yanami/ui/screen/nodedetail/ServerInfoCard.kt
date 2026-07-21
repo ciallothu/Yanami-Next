@@ -34,9 +34,10 @@ import com.sekusarisu.yanami.ui.screen.nodelist.formatUptime
 import com.sekusarisu.yanami.ui.screen.rememberAdaptiveLayoutInfo
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitDetail
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitTypeLabel
+import com.sekusarisu.yanami.ui.format.formatIpAddress
 
 @Composable
-internal fun ServerInfoCard(node: Node) {
+internal fun ServerInfoCard(node: Node, maskIpAddresses: Boolean = false) {
     val adaptiveInfo = rememberAdaptiveLayoutInfo()
     val trafficLimitUsage = node.calculateTrafficLimitUsage()
     Surface(
@@ -76,6 +77,12 @@ internal fun ServerInfoCard(node: Node) {
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         InfoRow(stringResource(R.string.node_detail_os), node.os)
+                        if (node.ipv4.isNotBlank()) {
+                            InfoRow(stringResource(R.string.node_ipv4), formatIpAddress(node.ipv4, maskIpAddresses))
+                        }
+                        if (node.ipv6.isNotBlank()) {
+                            InfoRow(stringResource(R.string.node_ipv6), formatIpAddress(node.ipv6, maskIpAddresses))
+                        }
                         if (node.kernelVersion.isNotBlank()) {
                             InfoRow(stringResource(R.string.node_detail_kernel), node.kernelVersion)
                         }
@@ -84,6 +91,18 @@ internal fun ServerInfoCard(node: Node) {
                                     stringResource(R.string.node_detail_platform),
                                     "${node.virtualization} / ${node.arch}"
                             )
+                        }
+                        if (node.agentVersion.isNotBlank()) {
+                            InfoRow(
+                                    stringResource(R.string.node_detail_agent_version),
+                                    node.agentVersion
+                            )
+                        }
+                        if (node.tags.isNotBlank()) {
+                            InfoRow(stringResource(R.string.node_detail_tags), node.tags)
+                        }
+                        node.publicRemark.ifBlank { node.remark }.takeIf { it.isNotBlank() }?.let {
+                            InfoRow(stringResource(R.string.node_detail_remark), it)
                         }
                         InfoRow(
                                 stringResource(R.string.node_detail_cpu),
@@ -96,6 +115,10 @@ internal fun ServerInfoCard(node: Node) {
                         InfoRow(
                                 stringResource(R.string.node_detail_net_traffic),
                                 "↑ ${formatBytes(node.netTotalUp)}  ↓ ${formatBytes(node.netTotalDown)}"
+                        )
+                        InfoRow(
+                                stringResource(R.string.node_net_interval_traffic),
+                                "↑ ${formatBytes(node.trafficUp)}  ↓ ${formatBytes(node.trafficDown)}"
                         )
                         InfoRow(stringResource(R.string.node_detail_uptime), formatUptime(node.uptime))
                     }
@@ -149,6 +172,12 @@ internal fun ServerInfoCard(node: Node) {
                 }
             } else {
                 InfoRow(stringResource(R.string.node_detail_os), node.os)
+                if (node.ipv4.isNotBlank()) {
+                    InfoRow(stringResource(R.string.node_ipv4), formatIpAddress(node.ipv4, maskIpAddresses))
+                }
+                if (node.ipv6.isNotBlank()) {
+                    InfoRow(stringResource(R.string.node_ipv6), formatIpAddress(node.ipv6, maskIpAddresses))
+                }
                 if (node.kernelVersion.isNotBlank()) {
                     InfoRow(stringResource(R.string.node_detail_kernel), node.kernelVersion)
                 }
@@ -157,6 +186,15 @@ internal fun ServerInfoCard(node: Node) {
                             stringResource(R.string.node_detail_platform),
                             "${node.virtualization} / ${node.arch}"
                     )
+                }
+                if (node.agentVersion.isNotBlank()) {
+                    InfoRow(stringResource(R.string.node_detail_agent_version), node.agentVersion)
+                }
+                if (node.tags.isNotBlank()) {
+                    InfoRow(stringResource(R.string.node_detail_tags), node.tags)
+                }
+                node.publicRemark.ifBlank { node.remark }.takeIf { it.isNotBlank() }?.let {
+                    InfoRow(stringResource(R.string.node_detail_remark), it)
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
@@ -209,6 +247,10 @@ internal fun ServerInfoCard(node: Node) {
                 InfoRow(
                         stringResource(R.string.node_detail_net_traffic),
                         "↑ ${formatBytes(node.netTotalUp)}  ↓ ${formatBytes(node.netTotalDown)}"
+                )
+                InfoRow(
+                        stringResource(R.string.node_net_interval_traffic),
+                        "↑ ${formatBytes(node.trafficUp)}  ↓ ${formatBytes(node.trafficDown)}"
                 )
                 InfoRow(
                         stringResource(R.string.node_detail_load),

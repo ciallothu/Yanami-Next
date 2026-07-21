@@ -41,7 +41,7 @@ struct SettingsView: View {
                 }
 
                 Section("Display") {
-                    Toggle("Mask IP / UUID", isOn: $draft.maskIpEnabled)
+                    Toggle("Mask IP addresses", isOn: $draft.maskIpEnabled)
                     Toggle("Chart animation", isOn: $draft.chartAnimationEnabled)
                     Picker("Dark mode", selection: $draft.darkMode) {
                         Text("System").tag("system")
@@ -73,7 +73,7 @@ struct SettingsView: View {
                 }
                 
                 Section("Build") {
-                    Text("Pre-release builds are generated automatically by CI for each PR.")
+                    Text("Version \(AppMetadata.version)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -101,7 +101,7 @@ struct SettingsView: View {
         }
         context.evaluatePolicy(
             policy,
-            localizedReason: AppLocalization.string("Enable biometric lock for YanamiNext", language: draft.language)
+            localizedReason: AppLocalization.string("Enable biometric lock for Yanami Next", language: draft.language)
         ) { success, _ in
             DispatchQueue.main.async {
                 if success {

@@ -3,8 +3,7 @@ package com.sekusarisu.yanami.ui.screen.nodedetail
 import android.content.Context
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
-import com.sekusarisu.yanami.data.remote.SessionManager
-import com.sekusarisu.yanami.data.remote.dto.NodeStatusDto
+import com.sekusarisu.yanami.data.repository.mergeLatestNodeStatus
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.LoadRecord
 import com.sekusarisu.yanami.domain.model.Node
@@ -27,7 +26,6 @@ class NodeDetailViewModel(
         private val uuid: String,
         private val nodeRepository: NodeRepository,
         private val serverRepository: ServerRepository,
-        private val sessionManager: SessionManager,
         private val context: Context
 ) :
         MviViewModel<NodeDetailContract.State, NodeDetailContract.Event, NodeDetailContract.Effect>(
@@ -43,6 +41,8 @@ class NodeDetailViewModel(
         private val realtimeRamSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeNetInSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeNetOutSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
+        private val realtimeTrafficUpSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
+        private val realtimeTrafficDownSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeTcpSeriesBuffer = ArrayDeque<Int>(MAX_REALTIME_RECORDS)
         private val realtimeUdpSeriesBuffer = ArrayDeque<Int>(MAX_REALTIME_RECORDS)
         private val realtimeProcessSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
@@ -144,7 +144,12 @@ class NodeDetailViewModel(
 
                                 // 获取节点基本信息（包含实时状态）
                                 val allNodes =
-                                        nodeRepository.getNodeInfos(server.baseUrl, sessionToken)
+                                        nodeRepository.getNodeInfos(
+                                                baseUrl = server.baseUrl,
+                                                sessionToken = sessionToken,
+                                                authType = server.authType,
+                                                customHeaders = server.customHeaders.toList()
+                                        )
                                 val node =
                                         allNodes.find { it.uuid == uuid }
                                                 ?: throw Exception(
@@ -171,7 +176,13 @@ class NodeDetailViewModel(
                                 if (currentState.selectedLoadHours == 0) {
                                         val recentRecords = try {
                                                 nodeRepository.getNodeRecentStatus(
-                                                        server.baseUrl, sessionToken, uuid)
+                                                        baseUrl = server.baseUrl,
+                                                        sessionToken = sessionToken,
+                                                        uuid = uuid,
+                                                        authType = server.authType,
+                                                        customHeaders =
+                                                                server.customHeaders.toList()
+                                                )
                                         } catch (_: Exception) {
                                                 emptyList()
                                         }
@@ -214,9 +225,15 @@ class NodeDetailViewModel(
         /** 调用 common:getNodeRecentStatus 获取最近 1 分钟未降采样数据，用作实时图表 seed */
         private suspend fun fetchRecentAsSeed(): List<LoadRecord> {
                 val server = serverRepository.getActive() ?: return emptyList()
-                val sessionToken = sessionManager.getSessionToken() ?: return emptyList()
                 return try {
-                        nodeRepository.getNodeRecentStatus(server.baseUrl, sessionToken, uuid)
+                        val sessionToken = ensureSession(server)
+                        nodeRepository.getNodeRecentStatus(
+                                baseUrl = server.baseUrl,
+                                sessionToken = sessionToken,
+                                uuid = uuid,
+                                authType = server.authType,
+                                customHeaders = server.customHeaders.toList()
+                        )
                 } catch (_: Exception) {
                         emptyList()
                 }
@@ -250,7 +267,10 @@ class NodeDetailViewModel(
                                                                                 .selectedLoadHours,
                                                         pingHours =
                                                                 currentStateSnapshot
-                                                                        .selectedPingHours
+                                                                        .selectedPingHours,
+                                                        authType = server.authType,
+                                                        customHeaders =
+                                                                server.customHeaders.toList()
                                                 )
                                                 .collect { event ->
                                                         when (event) {
@@ -264,17 +284,19 @@ class NodeDetailViewModel(
                                                                                                 .node
                                                                                                 ?: return@collect
                                                                                 val updatedNode =
-                                                                                        mergeNodeStatus(
+                                                                                        mergeLatestNodeStatus(
                                                                                                 currentNode,
                                                                                                 status
                                                                                         )
+                                                                                if (updatedNode == currentNode) {
+                                                                                        return@collect
+                                                                                }
                                                                                 if (currentState.selectedLoadHours ==
                                                                                                 0
                                                                                 ) {
                                                                                         appendRealtimeRecord(
                                                                                                 buildRealtimeRecord(
-                                                                                                        updatedNode,
-                                                                                                        status
+                                                                                                        updatedNode
                                                                                                 )
                                                                                         )
                                                                                 }
@@ -380,31 +402,7 @@ class NodeDetailViewModel(
                         }
         }
 
-        private fun mergeNodeStatus(node: Node, status: NodeStatusDto): Node {
-                return node.copy(
-                        isOnline = status.online,
-                        cpuUsage = status.cpu,
-                        memUsed = status.ram,
-                        memTotal = if (status.ramTotal > 0) status.ramTotal else node.memTotal,
-                        swapUsed = status.swap,
-                        swapTotal = if (status.swapTotal > 0) status.swapTotal else node.swapTotal,
-                        diskUsed = status.disk,
-                        diskTotal = if (status.diskTotal > 0) status.diskTotal else node.diskTotal,
-                        netIn = status.netIn,
-                        netOut = status.netOut,
-                        netTotalUp = status.netTotalUp,
-                        netTotalDown = status.netTotalDown,
-                        uptime = status.uptime,
-                        load1 = status.load,
-                        load5 = status.load5,
-                        load15 = status.load15,
-                        process = status.process,
-                        connectionsTcp = status.connections,
-                        connectionsUdp = status.connectionsUdp
-                )
-        }
-
-        private fun buildRealtimeRecord(node: Node, status: NodeStatusDto): LoadRecord {
+        private fun buildRealtimeRecord(node: Node): LoadRecord {
                 val ramPercent =
                         if (node.memTotal > 0) {
                                 node.memUsed.toDouble() / node.memTotal * 100
@@ -412,16 +410,23 @@ class NodeDetailViewModel(
                                 0.0
                         }
                 return LoadRecord(
-                        time = Instant.now().toString(),
-                        cpu = status.cpu,
+                        time = node.statusTime.ifBlank { Instant.now().toString() },
+                        cpu = node.cpuUsage,
                         ramPercent = ramPercent,
-                        diskPercent = 0.0,
-                        netIn = status.netIn,
-                        netOut = status.netOut,
-                        load = status.load,
-                        process = status.process,
-                        connections = status.connections,
-                        connectionsUdp = status.connectionsUdp
+                        diskPercent =
+                                if (node.diskTotal > 0) {
+                                    node.diskUsed.toDouble() / node.diskTotal * 100
+                                } else 0.0,
+                        netIn = node.netIn,
+                        netOut = node.netOut,
+                        load = node.load1,
+                        process = node.process,
+                        connections = node.connectionsTcp,
+                        connectionsUdp = node.connectionsUdp,
+                        netTotalUp = node.netTotalUp,
+                        netTotalDown = node.netTotalDown,
+                        trafficUp = node.trafficUp,
+                        trafficDown = node.trafficDown
                 )
         }
 
@@ -435,6 +440,7 @@ class NodeDetailViewModel(
         }
 
         private fun appendRealtimeRecord(record: LoadRecord) {
+                if (realtimeLoadRecordBuffer.lastOrNull()?.time == record.time) return
                 if (realtimeLoadRecordBuffer.size == MAX_REALTIME_RECORDS) {
                         realtimeLoadRecordBuffer.removeFirst()
                         dropOldestRealtimeChartPoint()
@@ -449,6 +455,8 @@ class NodeDetailViewModel(
                 realtimeRamSeriesBuffer.clear()
                 realtimeNetInSeriesBuffer.clear()
                 realtimeNetOutSeriesBuffer.clear()
+                realtimeTrafficUpSeriesBuffer.clear()
+                realtimeTrafficDownSeriesBuffer.clear()
                 realtimeTcpSeriesBuffer.clear()
                 realtimeUdpSeriesBuffer.clear()
                 realtimeProcessSeriesBuffer.clear()
@@ -460,6 +468,8 @@ class NodeDetailViewModel(
                 realtimeRamSeriesBuffer.addLast(record.ramPercent)
                 realtimeNetInSeriesBuffer.addLast(record.netIn.toDouble())
                 realtimeNetOutSeriesBuffer.addLast(record.netOut.toDouble())
+                realtimeTrafficUpSeriesBuffer.addLast(record.trafficUp.toDouble())
+                realtimeTrafficDownSeriesBuffer.addLast(record.trafficDown.toDouble())
                 realtimeTcpSeriesBuffer.addLast(record.connections)
                 realtimeUdpSeriesBuffer.addLast(record.connectionsUdp)
                 realtimeProcessSeriesBuffer.addLast(record.process.toDouble())
@@ -471,6 +481,8 @@ class NodeDetailViewModel(
                 realtimeRamSeriesBuffer.removeFirstOrNull()
                 realtimeNetInSeriesBuffer.removeFirstOrNull()
                 realtimeNetOutSeriesBuffer.removeFirstOrNull()
+                realtimeTrafficUpSeriesBuffer.removeFirstOrNull()
+                realtimeTrafficDownSeriesBuffer.removeFirstOrNull()
                 realtimeTcpSeriesBuffer.removeFirstOrNull()
                 realtimeUdpSeriesBuffer.removeFirstOrNull()
                 realtimeProcessSeriesBuffer.removeFirstOrNull()
@@ -483,6 +495,8 @@ class NodeDetailViewModel(
                         ramSeries = realtimeRamSeriesBuffer.toList(),
                         netInSeries = realtimeNetInSeriesBuffer.toList(),
                         netOutSeries = realtimeNetOutSeriesBuffer.toList(),
+                        trafficUpSeries = realtimeTrafficUpSeriesBuffer.toList(),
+                        trafficDownSeries = realtimeTrafficDownSeriesBuffer.toList(),
                         tcpSeries = realtimeTcpSeriesBuffer.toList(),
                         udpSeries = realtimeUdpSeriesBuffer.toList(),
                         processSeries = realtimeProcessSeriesBuffer.toList()
@@ -499,6 +513,8 @@ class NodeDetailViewModel(
                 val ramSeries = ArrayList<Double>(records.size)
                 val netInSeries = ArrayList<Double>(records.size)
                 val netOutSeries = ArrayList<Double>(records.size)
+                val trafficUpSeries = ArrayList<Double>(records.size)
+                val trafficDownSeries = ArrayList<Double>(records.size)
                 val tcpSeries = ArrayList<Int>(records.size)
                 val udpSeries = ArrayList<Int>(records.size)
                 val processSeries = ArrayList<Double>(records.size)
@@ -509,6 +525,8 @@ class NodeDetailViewModel(
                         ramSeries.add(record.ramPercent)
                         netInSeries.add(record.netIn.toDouble())
                         netOutSeries.add(record.netOut.toDouble())
+                        trafficUpSeries.add(record.trafficUp.toDouble())
+                        trafficDownSeries.add(record.trafficDown.toDouble())
                         tcpSeries.add(record.connections)
                         udpSeries.add(record.connectionsUdp)
                         processSeries.add(record.process.toDouble())
@@ -520,6 +538,8 @@ class NodeDetailViewModel(
                         ramSeries = ramSeries,
                         netInSeries = netInSeries,
                         netOutSeries = netOutSeries,
+                        trafficUpSeries = trafficUpSeries,
+                        trafficDownSeries = trafficDownSeries,
                         tcpSeries = tcpSeries,
                         udpSeries = udpSeries,
                         processSeries = processSeries

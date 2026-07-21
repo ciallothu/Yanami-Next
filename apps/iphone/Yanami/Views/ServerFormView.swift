@@ -109,7 +109,7 @@ struct ServerFormView: View {
 
     private var canSave: Bool {
         !draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        URL(string: draft.normalizedBaseURL) != nil &&
+        draft.validatedBaseURL != nil &&
         (draft.authType == .guest ||
          draft.authType == .apiKey && !draft.apiKey.isEmpty ||
          draft.authType == .password && !draft.username.isEmpty && !draft.password.isEmpty)

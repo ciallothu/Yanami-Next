@@ -49,6 +49,7 @@ class KomariAuthService(private val httpClient: HttpClient) {
             customHeaders: List<CustomHeader> = emptyList()
     ): LoginResult {
         val url = baseUrl.trimEnd('/') + "/api/login"
+        val requestHeaders = customHeaders.toList()
 
         val requestBody = buildJsonObject {
             put("username", username)
@@ -62,9 +63,8 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val response =
                     httpClient.post(url) {
                         contentType(ContentType.Application.Json)
-                        skipSessionInterceptor()
-                        applyCustomHeaders(customHeaders)
-                        header("User-Agent", "YanamiNext/${BuildConfig.VERSION_NAME}")
+                        applyCustomHeaders(requestHeaders)
+                        header("User-Agent", "Yanami-Next/${BuildConfig.VERSION_NAME}")
                         setBody(requestBody.toString())
                     }
 
@@ -76,23 +76,15 @@ class KomariAuthService(private val httpClient: HttpClient) {
                 Log.d(TAG, "Login successful, got session_token")
                 LoginResult.Success(sessionToken)
             } else {
-                // 尝试解析响应体获取更多信息
-                val responseText = response.bodyAsText()
-                Log.w(TAG, "Login response (no token): $responseText")
-
-                // 检查是否需要 2FA
-                if (responseText.contains("2fa", ignoreCase = true) ||
-                                responseText.contains("two-factor", ignoreCase = true) ||
-                                responseText.contains("totp", ignoreCase = true)
-                ) {
-                    LoginResult.Requires2FA("需要输入两步验证码")
-                } else {
-                    LoginResult.Error("登录失败: $responseText")
-                }
+                // Inspect only a bounded prefix for a 2FA hint. Never log or return server bodies:
+                // they may contain credentials, internal diagnostics, or attacker-controlled text.
+                val responsePrefix = response.bodyAsText().take(MAX_AUTH_RESPONSE_INSPECTION_CHARS)
+                Log.w(TAG, "Login rejected without a session token")
+                loginFailureResult(responsePrefix)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Login error: ${e.message}", e)
-            LoginResult.Error("登录失败: ${e.message}")
+            Log.w(TAG, "Login request failed (${e::class.java.simpleName})")
+            LoginResult.Error(LOGIN_REQUEST_FAILED_MESSAGE)
         }
     }
 
@@ -109,6 +101,7 @@ class KomariAuthService(private val httpClient: HttpClient) {
     ): Boolean {
         return try {
             val url = baseUrl.trimEnd('/') + "/api/rpc2"
+            val requestHeaders = customHeaders.toList()
             val rpcRequest = buildJsonObject {
                 put("jsonrpc", "2.0")
                 put("method", "common:getVersion")
@@ -118,10 +111,9 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val response =
                     httpClient.post(url) {
                         contentType(ContentType.Application.Json)
-                        skipSessionInterceptor()
-                        applyCustomHeaders(customHeaders)
+                        applyCustomHeaders(requestHeaders)
                         applyAuth(apiKey, AuthType.API_KEY)
-                        header("User-Agent", "YanamiNext/${BuildConfig.VERSION_NAME}")
+                        header("User-Agent", "Yanami-Next/${BuildConfig.VERSION_NAME}")
                         setBody(rpcRequest.toString())
                     }
 
@@ -131,10 +123,10 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val version = result?.get("version")?.jsonPrimitive?.content
 
             val isValid = !version.isNullOrBlank()
-            Log.d(TAG, "API Key validation: version=$version, valid=$isValid")
+            Log.d(TAG, "API Key validation completed: valid=$isValid")
             isValid
         } catch (e: Exception) {
-            Log.w(TAG, "API Key validation error: ${e.message}")
+            Log.w(TAG, "API Key validation failed (${e::class.java.simpleName})")
             false
         }
     }
@@ -151,6 +143,7 @@ class KomariAuthService(private val httpClient: HttpClient) {
     ): Boolean {
         return try {
             val url = baseUrl.trimEnd('/') + "/api/rpc2"
+            val requestHeaders = customHeaders.toList()
             val rpcRequest = buildJsonObject {
                 put("jsonrpc", "2.0")
                 put("method", "common:getMe")
@@ -160,8 +153,7 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val response =
                     httpClient.post(url) {
                         contentType(ContentType.Application.Json)
-                        skipSessionInterceptor()
-                        applyCustomHeaders(customHeaders)
+                        applyCustomHeaders(requestHeaders)
                         applyAuth(sessionToken, AuthType.PASSWORD)
                         setBody(rpcRequest.toString())
                     }
@@ -175,10 +167,10 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val username = result?.get("username")?.jsonPrimitive?.content
 
             val isValid = loggedIn == true && username != "Guest"
-            Log.d(TAG, "Session validation: loggedIn=$loggedIn, username=$username, valid=$isValid")
+            Log.d(TAG, "Session validation completed: valid=$isValid")
             isValid
         } catch (e: Exception) {
-            Log.w(TAG, "Session validation error: ${e.message}")
+            Log.w(TAG, "Session validation failed (${e::class.java.simpleName})")
             false
         }
     }
@@ -195,14 +187,14 @@ class KomariAuthService(private val httpClient: HttpClient) {
     ) {
         try {
             val url = baseUrl.trimEnd('/') + "/api/logout"
+            val requestHeaders = customHeaders.toList()
             httpClient.post(url) {
-                skipSessionInterceptor()
-                applyCustomHeaders(customHeaders)
+                applyCustomHeaders(requestHeaders)
                 applyAuth(sessionToken, AuthType.PASSWORD)
             }
             Log.d(TAG, "Logout successful")
         } catch (e: Exception) {
-            Log.w(TAG, "Logout error: ${e.message}")
+            Log.w(TAG, "Logout request failed (${e::class.java.simpleName})")
         }
     }
 
@@ -224,6 +216,25 @@ class KomariAuthService(private val httpClient: HttpClient) {
             }
         }
         return null
+    }
+}
+
+internal const val MAX_AUTH_RESPONSE_INSPECTION_CHARS = 4_096
+internal const val LOGIN_FAILED_MESSAGE = "登录失败，请检查凭据"
+internal const val LOGIN_REQUEST_FAILED_MESSAGE = "登录请求失败，请检查网络和服务器地址"
+internal const val TWO_FACTOR_REQUIRED_MESSAGE = "需要输入两步验证码"
+
+/** Maps an untrusted login response to a fixed, non-reflective user-facing error. */
+internal fun loginFailureResult(responseBody: String): LoginResult {
+    val boundedBody = responseBody.take(MAX_AUTH_RESPONSE_INSPECTION_CHARS)
+    val requiresTwoFactor =
+            boundedBody.contains("2fa", ignoreCase = true) ||
+                    boundedBody.contains("two-factor", ignoreCase = true) ||
+                    boundedBody.contains("totp", ignoreCase = true)
+    return if (requiresTwoFactor) {
+        LoginResult.Requires2FA(TWO_FACTOR_REQUIRED_MESSAGE)
+    } else {
+        LoginResult.Error(LOGIN_FAILED_MESSAGE)
     }
 }
 

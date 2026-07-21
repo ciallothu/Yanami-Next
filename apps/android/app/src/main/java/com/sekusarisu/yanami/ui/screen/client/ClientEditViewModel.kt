@@ -79,6 +79,7 @@ class ClientEditViewModel(
                                 baseUrl = server.baseUrl,
                                 sessionToken = sessionToken,
                                 authType = server.authType,
+                                customHeaders = server.customHeaders.toList(),
                                 uuid = uuid
                         )
                 setState {
@@ -131,6 +132,7 @@ class ClientEditViewModel(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
                         authType = server.authType,
+                        customHeaders = server.customHeaders.toList(),
                         uuid = uuid,
                         draft = currentState.draft
                 )

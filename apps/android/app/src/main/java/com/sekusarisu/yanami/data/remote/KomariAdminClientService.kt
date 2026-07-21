@@ -5,6 +5,7 @@ import com.sekusarisu.yanami.data.remote.dto.AdminEnvelopeDto
 import com.sekusarisu.yanami.data.remote.dto.ClientCreateResultDto
 import com.sekusarisu.yanami.data.remote.dto.ClientTokenDto
 import com.sekusarisu.yanami.data.remote.dto.ManagedClientDto
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -30,11 +31,12 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
     suspend fun listClients(
             baseUrl: String,
             sessionToken: String,
-            authType: AuthType
+            authType: AuthType,
+            customHeaders: List<CustomHeader>
     ): List<ManagedClientDto> {
         val response =
                 httpClient.get(baseUrl.trimEnd('/') + "/api/admin/client/list") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                 }
         return parseData(response, ListSerializer(ManagedClientDto.serializer()))
     }
@@ -43,11 +45,12 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ): ManagedClientDto {
         val response =
                 httpClient.get(baseUrl.trimEnd('/') + "/api/admin/client/$uuid") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                 }
         return parseData(response, ManagedClientDto.serializer())
     }
@@ -56,6 +59,7 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             name: String?
     ): ClientCreateResultDto {
         val requestBody =
@@ -66,7 +70,7 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
                 }
         val response =
                 httpClient.post(baseUrl.trimEnd('/') + "/api/admin/client/add") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                     contentType(ContentType.Application.Json)
                     setBody(requestBody.toString())
                 }
@@ -77,12 +81,13 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String,
             payload: JsonObject
     ) {
         val response =
                 httpClient.post(baseUrl.trimEnd('/') + "/api/admin/client/$uuid/edit") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                     contentType(ContentType.Application.Json)
                     setBody(payload.toString())
                 }
@@ -93,11 +98,12 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ) {
         val response =
                 httpClient.post(baseUrl.trimEnd('/') + "/api/admin/client/$uuid/remove") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                 }
         parseNoContent(response)
     }
@@ -106,11 +112,12 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ): String {
         val response =
                 httpClient.get(baseUrl.trimEnd('/') + "/api/admin/client/$uuid/token") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                 }
         return parseData(response, ClientTokenDto.serializer()).token
     }
@@ -119,6 +126,7 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             weights: Map<String, Int>
     ) {
         val payload =
@@ -127,32 +135,43 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
                 }
         val response =
                 httpClient.post(baseUrl.trimEnd('/') + "/api/admin/client/order") {
-                    applyAdminAuth(sessionToken, authType)
+                    applyAdminAuth(sessionToken, authType, customHeaders)
                     contentType(ContentType.Application.Json)
                     setBody(payload.toString())
                 }
         parseNoContent(response)
     }
 
-    private fun io.ktor.client.request.HttpRequestBuilder.applyAdminAuth(
-            sessionToken: String,
-            authType: AuthType
-    ) {
-        if (authType == AuthType.GUEST) {
-            throw IllegalStateException("游客模式不支持 Client 管理")
-        }
-        applyAuth(sessionToken, authType)
-    }
-
     private suspend fun <T> parseData(response: HttpResponse, serializer: KSerializer<T>): T {
+        val statusCode = response.status.value
         val responseText = response.bodyAsText()
-        val rawResult = runCatching { json.decodeFromString(serializer, responseText) }.getOrNull()
-        if (rawResult != null && response.status.value in 200..299) {
-            return rawResult
+        val envelope = parseEnvelopeIfPresent(statusCode, responseText)
+        if (envelope != null) {
+            val data =
+                    envelope.data
+                            ?: throw AdminApiException(
+                                    statusCode,
+                                    missingRemoteDataMessage(statusCode)
+                            )
+            return runCatching { json.decodeFromJsonElement(serializer, data) }
+                    .getOrElse {
+                        throw AdminApiException(
+                                statusCode,
+                                invalidRemoteResponseMessage(statusCode)
+                        )
+                    }
         }
-        val envelope = parseEnvelope(response.status.value, responseText)
-        val data = envelope.data ?: throw AdminApiException(response.status.value, "响应缺少 data")
-        return json.decodeFromJsonElement(serializer, data)
+
+        if (statusCode !in 200..299) {
+            throw AdminApiException(statusCode, "HTTP $statusCode")
+        }
+        return runCatching { json.decodeFromString(serializer, responseText) }
+                .getOrElse {
+                    throw AdminApiException(
+                            statusCode,
+                            invalidRemoteResponseMessage(statusCode)
+                    )
+                }
     }
 
     private suspend fun parseNoContent(response: HttpResponse) {
@@ -160,29 +179,52 @@ class KomariAdminClientService(private val httpClient: HttpClient) {
         if (response.status.value in 200..299 && responseText.isBlank()) {
             return
         }
-        parseEnvelope(response.status.value, responseText)
+        if (parseEnvelopeIfPresent(response.status.value, responseText) == null) {
+            throw AdminApiException(
+                    response.status.value,
+                    invalidRemoteResponseMessage(response.status.value)
+            )
+        }
     }
 
-    private fun parseEnvelope(statusCode: Int, responseText: String): AdminEnvelopeDto {
+    private fun parseEnvelopeIfPresent(
+            statusCode: Int,
+            responseText: String
+    ): AdminEnvelopeDto? {
+        val root =
+                runCatching { json.parseToJsonElement(responseText) }
+                        .getOrElse {
+                            throw AdminApiException(
+                                    statusCode,
+                                    invalidRemoteResponseMessage(statusCode)
+                            )
+                        }
+        val rootObject = root as? JsonObject ?: return null
+        val isEnvelope =
+                rootObject.containsKey("status") ||
+                        rootObject.containsKey("message") ||
+                        rootObject.containsKey("data")
+        if (!isEnvelope) return null
+
         val envelope =
-                runCatching { json.decodeFromString(AdminEnvelopeDto.serializer(), responseText) }
-                        .getOrNull()
-
-        if (envelope == null) {
-            val fallbackMessage =
-                    responseText.ifBlank { "HTTP $statusCode" }.take(200)
-            throw AdminApiException(statusCode, fallbackMessage)
-        }
-
+                runCatching {
+                            json.decodeFromJsonElement(AdminEnvelopeDto.serializer(), rootObject)
+                        }
+                        .getOrElse {
+                            throw AdminApiException(
+                                    statusCode,
+                                    invalidRemoteResponseMessage(statusCode)
+                            )
+                        }
         if (statusCode !in 200..299 || envelope.status.equals("error", ignoreCase = true)) {
             throw AdminApiException(
                     statusCode = statusCode,
-                    message = envelope.message.ifBlank { "HTTP $statusCode" }
+                    message = safeRemoteErrorMessage(envelope.message, statusCode)
             )
         }
-
+        if (envelope.status.isBlank() && envelope.data == null) {
+            throw AdminApiException(statusCode, invalidRemoteResponseMessage(statusCode))
+        }
         return envelope
     }
 }
-
-class AdminApiException(val statusCode: Int, override val message: String) : Exception(message)

@@ -50,6 +50,18 @@ data class Node(
         val trafficLimit: Long = 0,
         val trafficLimitType: String = "",
         val expiredAt: String? = null,
+        val ipv4: String = "",
+        val ipv6: String = "",
+        /** Timestamp reported by Komari for the most recently accepted status sample. */
+        val statusTime: String = "",
+        /** Bytes transferred since the previous status refresh. */
+        val trafficUp: Long = 0,
+        val trafficDown: Long = 0,
+        val cpuPhysicalCores: Int = 0,
+        val agentVersion: String = "",
+        val tags: String = "",
+        val remark: String = "",
+        val publicRemark: String = "",
         // Cache parsed expiry once when the model is created to avoid repeated exception-heavy parsing.
         val expiryInstant: Instant? =
                 expiredAt
@@ -98,6 +110,12 @@ fun Node.calculateTrafficLimitUsage(): TrafficLimitUsage? {
 }
 
 private val SUPPORTED_TRAFFIC_LIMIT_TYPES = setOf("sum", "max", "min", "up", "down")
+
+/** Komari agents reset cumulative network counters after restarts. */
+fun resetAwareCounterDelta(previous: Long?, current: Long): Long {
+        if (previous == null || previous < 0 || current < 0) return 0
+        return if (current >= previous) current - previous else current
+}
 
 fun Node.calculateExpiryStatus(
         now: Instant = Instant.now(),

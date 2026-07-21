@@ -19,9 +19,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
     }
 }
 
-rootProject.name = "YanamiNext"
+rootProject.name = "Yanami-Next"
 include(":app")
+include(":terminal-emulator")
+include(":terminal-view")

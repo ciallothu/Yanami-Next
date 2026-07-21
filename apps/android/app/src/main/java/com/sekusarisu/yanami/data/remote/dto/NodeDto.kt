@@ -34,10 +34,13 @@ data class NodeInfoDto(
         val virtualization: String = "",
         val arch: String = "",
         @SerialName("cpu_cores") val cpuCores: Int = 0,
+        @SerialName("cpu_physical_cores") val cpuPhysicalCores: Int = 0,
         val os: String = "",
         @SerialName("kernel_version") val kernelVersion: String = "",
         @SerialName("gpu_name") val gpuName: String = "",
         val region: String = "",
+        val ipv4: String = "",
+        val ipv6: String = "",
         @SerialName("mem_total") val memTotal: Long = 0,
         @SerialName("swap_total") val swapTotal: Long = 0,
         @SerialName("disk_total") val diskTotal: Long = 0,
@@ -49,6 +52,9 @@ data class NodeInfoDto(
         @SerialName("expired_at") val expiredAt: String? = null,
         val group: String = "",
         val tags: String = "",
+        val remark: String = "",
+        @SerialName("public_remark") val publicRemark: String = "",
+        val version: String = "",
         val hidden: Boolean = false,
         @SerialName("traffic_limit") val trafficLimit: Long = 0,
         @SerialName("traffic_limit_type") val trafficLimitType: String = "",
@@ -82,7 +88,7 @@ data class NodeStatusDto(
         val uptime: Long = 0,
         val ping: Map<String, PingDetailDto>? = null,
         val online: Boolean = false,
-        @SerialName("updated_at") val updatedAt: String = ""
+        val time: String = ""
 )
 
 // ─── Ping 详情对象（实际 API 返回的结构） ───
@@ -118,6 +124,8 @@ data class LoadRecordDto(
         @SerialName("net_out") val netOut: Long = 0,
         @SerialName("net_total_up") val netTotalUp: Long = 0,
         @SerialName("net_total_down") val netTotalDown: Long = 0,
+        @SerialName("traffic_up") val trafficUp: Long? = null,
+        @SerialName("traffic_down") val trafficDown: Long? = null,
         val process: Int = 0,
         val connections: Int = 0,
         @SerialName("connections_udp") val connectionsUdp: Int = 0

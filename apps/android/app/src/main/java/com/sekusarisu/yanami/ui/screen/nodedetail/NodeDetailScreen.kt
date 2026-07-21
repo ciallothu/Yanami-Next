@@ -176,6 +176,7 @@ class NodeDetailScreen(private val uuid: String) : Screen {
                         NodeDetailContent(
                                 state = state,
                                 chartAnimationEnabled = chartAnimationEnabled,
+                                maskIpAddresses = prefs.maskIpEnabled,
                                 isTabletLandscape = adaptiveInfo.isTabletLandscape,
                                 onLoadHoursChanged = {
                                     viewModel.onEvent(NodeDetailContract.Event.LoadHoursChanged(it))

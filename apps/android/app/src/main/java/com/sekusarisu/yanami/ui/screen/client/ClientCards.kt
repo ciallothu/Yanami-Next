@@ -62,6 +62,7 @@ internal fun ClientCard(
 ) {
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
+    val ipCopiedMessage = stringResource(R.string.client_management_ip_copied)
 
     OutlinedCard(
             colors = CardDefaults.cardColors(MaterialTheme.colorScheme.surfaceContainer),
@@ -118,7 +119,7 @@ internal fun ClientCard(
                                 clipboard.setText(AnnotatedString(client.ipv4))
                                 Toast.makeText(
                                                 context,
-                                                context.getString(R.string.client_management_ip_copied),
+                                                ipCopiedMessage,
                                                 Toast.LENGTH_SHORT
                                         )
                                         .show()
@@ -143,7 +144,7 @@ internal fun ClientCard(
                                 clipboard.setText(AnnotatedString(client.ipv6))
                                 Toast.makeText(
                                                 context,
-                                                context.getString(R.string.client_management_ip_copied),
+                                                ipCopiedMessage,
                                                 Toast.LENGTH_SHORT
                                         )
                                         .show()

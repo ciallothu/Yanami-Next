@@ -21,14 +21,21 @@ struct KeychainStore {
     func save<T: Encodable>(_ value: T, account: String) throws {
         let data = try JSONEncoder().encode(value)
         let query = baseQuery(account: account)
-        SecItemDelete(query as CFDictionary)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainError.unhandled(updateStatus)
+        }
 
         var item = query
-        item[kSecValueData as String] = data
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw KeychainError.unhandled(status)
+        attributes.forEach { item[$0.key] = $0.value }
+        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw KeychainError.unhandled(addStatus)
         }
     }
 
@@ -41,6 +48,14 @@ struct KeychainStore {
     }
 }
 
-enum KeychainError: Error {
+enum KeychainError: LocalizedError {
     case unhandled(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .unhandled(let status):
+            let detail = SecCopyErrorMessageString(status, nil) as String?
+            return detail ?? "Keychain operation failed (OSStatus \(status))"
+        }
+    }
 }

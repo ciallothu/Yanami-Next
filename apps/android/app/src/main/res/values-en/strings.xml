@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">YanamiNext</string>
+    <string name="app_name">Yanami Next</string>
 
     <!-- Common -->
     <string name="action_back">Back</string>
@@ -41,6 +41,8 @@
     <string name="add_server_name_label">Server name</string>
     <string name="add_server_name_hint">e.g. My Komari</string>
     <string name="add_server_url_label">Server URL</string>
+    <string name="add_server_url_invalid">The server address must be a valid HTTPS URL without credentials, a query, or a fragment</string>
+    <string name="add_server_header_name_reserved">Header “%1$s” is managed by the app and cannot be overridden</string>
     <string name="add_server_url_hint">https://komari.example.com</string>
     <string name="add_server_username_label">Username</string>
     <string name="add_server_username_hint">admin</string>
@@ -104,7 +106,12 @@
     <string name="node_traffic_up">Total upload traffic</string>
     <string name="node_traffic_down">Total download traffic</string>
     <string name="node_net_speed">Speed</string>
-    <string name="node_net_traffic">Traffic</string>
+    <string name="node_net_traffic">Traffic Usage</string>
+    <string name="node_net_interval_traffic">Current Traffic</string>
+    <string name="node_ipv4">IPv4</string>
+    <string name="node_ipv6">IPv6</string>
+    <string name="settings_mask_ip">Mask IP addresses</string>
+    <string name="settings_mask_ip_desc">Hide identifying parts of IP addresses in node views</string>
     <string name="client_management_title">Client Management</string>
     <string name="client_management_search">Search clients…</string>
     <string name="client_management_total_count">Showing %1$d / %2$d</string>
@@ -230,12 +237,15 @@
     <string name="node_detail_kernel">Kernel</string>
     <string name="node_detail_platform">Platform / Arch</string>
     <string name="node_detail_cpu">CPU</string>
+    <string name="node_detail_agent_version">Agent Version</string>
+    <string name="node_detail_tags">Tags</string>
+    <string name="node_detail_remark">Remark</string>
     <string name="node_detail_cores">Cores</string>
     <string name="node_detail_cpu_usage">CPU Usage</string>
     <string name="node_detail_ram">RAM</string>
     <string name="node_detail_disk">Disk</string>
     <string name="node_detail_net_speed">Net Speed</string>
-    <string name="node_detail_net_traffic">Traffic</string>
+    <string name="node_detail_net_traffic">Traffic Usage</string>
     <string name="node_detail_traffic_limit">Traffic Limit</string>
     <string name="node_detail_connections">Connections</string>
     <string name="node_detail_process">Processes</string>
@@ -270,9 +280,9 @@
     <string name="settings_backup">Backup</string>
     <string name="settings_others">Others</string>
     <string name="settings_export_config">Export Config</string>
-    <string name="settings_export_config_desc">Export servers and snippets to a JSON file</string>
+    <string name="settings_export_config_desc">Export safe JSON without passwords, tokens, auth headers, or snippets</string>
     <string name="settings_import_config">Import Config</string>
-    <string name="settings_import_config_desc">Merge servers and snippets from a JSON file</string>
+    <string name="settings_import_config_desc">Merge a backup; servers without credentials require authentication</string>
     <string name="settings_export_success">Exported %1$d servers and %2$d snippets</string>
     <string name="settings_export_failed">Export failed: %1$s</string>
     <string name="settings_import_success">Import complete: %1$d added / %2$d updated servers, %3$d added / %4$d updated snippets</string>
@@ -343,6 +353,10 @@
     <string name="settings_biometric_desc">Enable to require biometric or device password to continue</string>
     <string name="biometric_prompt_title">Authentication</string>
     <string name="biometric_prompt_subtitle">Please authenticate with biometric or device password to continue</string>
+    <string name="biometric_unavailable">No biometric or device credential is available</string>
+    <string name="biometric_locked_title">Yanami Next is locked</string>
+    <string name="biometric_locked_description">Authenticate to continue</string>
+    <string name="biometric_unlock_action">Unlock</string>
 
     <!-- Update Check -->
     <string name="update_check">Check for Updates</string>

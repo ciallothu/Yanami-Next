@@ -49,7 +49,7 @@ struct NodeListView: View {
                 }
             }
             .navigationTitle(store.activeServer?.name ?? "Nodes")
-            .searchable(text: $store.searchQuery, prompt: "Search node, UUID, group")
+            .searchable(text: $store.searchQuery, prompt: "Search node, IP, UUID, group")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     HStack {
@@ -126,7 +126,7 @@ private struct NodeSummaryView: View {
                     systemImage: "arrow.down"
                 )
                 SummaryMetricView(
-                    title: "Total Traffic",
+                    title: "Latest Traffic",
                     value: Formatters.bytes(store.totalTrafficUp + store.totalTrafficDown),
                     systemImage: "chart.bar"
                 )
@@ -139,6 +139,21 @@ private struct NodeSummaryView: View {
                     title: "Download Traffic",
                     value: Formatters.bytes(store.totalTrafficDown),
                     systemImage: "arrow.down.circle"
+                )
+                SummaryMetricView(
+                    title: "Total Usage",
+                    value: Formatters.bytes(store.totalUsageUp + store.totalUsageDown),
+                    systemImage: "externaldrive"
+                )
+                SummaryMetricView(
+                    title: "Upload Usage",
+                    value: Formatters.bytes(store.totalUsageUp),
+                    systemImage: "arrow.up.to.line"
+                )
+                SummaryMetricView(
+                    title: "Download Usage",
+                    value: Formatters.bytes(store.totalUsageDown),
+                    systemImage: "arrow.down.to.line"
                 )
             }
 
@@ -182,6 +197,7 @@ private struct SummaryMetricView: View {
 }
 
 private struct NodeRowView: View {
+    @EnvironmentObject private var store: AppStore
     let node: KomariNode
 
     var body: some View {
@@ -208,6 +224,23 @@ private struct NodeRowView: View {
                 StatusBadge(isOnline: node.isOnline)
             }
 
+            if !node.ipv4.isEmpty || !node.ipv6.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    if !node.ipv4.isEmpty {
+                        NodeAddressLine(
+                            label: "IPv4",
+                            value: displayedAddress(node.ipv4)
+                        )
+                    }
+                    if !node.ipv6.isEmpty {
+                        NodeAddressLine(
+                            label: "IPv6",
+                            value: displayedAddress(node.ipv6)
+                        )
+                    }
+                }
+            }
+
             if node.isOnline {
                 // Circular Indicators
                 HStack(alignment: .top) {
@@ -229,22 +262,22 @@ private struct NodeRowView: View {
                         detail: Formatters.bytes(node.diskTotal)
                     )
                     
-                    if let traffic = node.trafficUsage {
+                    if let usage = node.trafficLimitUsage {
                         Spacer()
                         VStack(spacing: 4) {
                             ZStack {
                                 Circle()
                                     .stroke(Color.gray.opacity(0.2), lineWidth: 5)
                                 Circle()
-                                    .trim(from: 0, to: CGFloat(traffic.percent))
+                                    .trim(from: 0, to: CGFloat(min(max(usage.fraction, 0), 1)))
                                     .stroke(Color.purple, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                                     .rotationEffect(.degrees(-90))
                                 
-                                Text("\(Int(traffic.percent * 100))%")
+                                Text(Formatters.percent(usage.fraction * 100, digits: 0))
                                     .font(.system(size: 10, weight: .bold))
                             }
                             .frame(width: 44, height: 44)
-                            Text("TRAFFIC")
+                            Text("USAGE")
                                 .font(.system(size: 8, weight: .medium))
                                 .foregroundStyle(.secondary)
                         }
@@ -252,39 +285,95 @@ private struct NodeRowView: View {
                 }
                 .padding(.vertical, 4)
 
-                // Traffic speeds and total
-                HStack {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.up")
-                        Text(Formatters.rate(node.netOut))
-                        Text("(\(Formatters.bytes(node.netTotalUp)))")
-                            .font(.system(size: 10))
-                    }
-                    Spacer()
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.down")
-                        Text(Formatters.rate(node.netIn))
-                        Text("(\(Formatters.bytes(node.netTotalDown)))")
-                            .font(.system(size: 10))
-                    }
+                VStack(spacing: 5) {
+                    NodeTransferLine(
+                        title: "Network Speed",
+                        upload: Formatters.rate(node.netOut),
+                        download: Formatters.rate(node.netIn)
+                    )
+                    NodeTransferLine(
+                        title: "Latest Traffic",
+                        upload: Formatters.bytes(node.trafficUp),
+                        download: Formatters.bytes(node.trafficDown)
+                    )
+                    NodeTransferLine(
+                        title: "Traffic Usage",
+                        upload: Formatters.bytes(node.netTotalUp),
+                        download: Formatters.bytes(node.netTotalDown)
+                    )
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private func displayedAddress(_ address: String) -> String {
+        store.settings.maskIpEnabled ? Formatters.maskIPAddress(address) : address
+    }
+}
+
+private struct NodeAddressLine: View {
+    let label: LocalizedStringKey
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .monospaced()
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .font(.caption2)
+    }
+}
+
+private struct NodeTransferLine: View {
+    let title: LocalizedStringKey
+    let upload: String
+    let download: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .foregroundStyle(.tertiary)
+                .frame(minWidth: 82, alignment: .leading)
+            Label(upload, systemImage: "arrow.up")
+            Spacer(minLength: 4)
+            Label(download, systemImage: "arrow.down")
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .monospacedDigit()
     }
 }
 
 private struct AdminNavigationWrapper: View {
     let server: ServerProfile
+    @EnvironmentObject private var appStore: AppStore
     @State private var token: String?
     @State private var error: String?
+    @State private var isResolvingToken = false
+    @State private var didResolveInitialToken = false
 
     var body: some View {
         Group {
-            if let token = token {
-                AdminView(store: AdminStore(server: server, token: token))
+            if isResolvingToken {
+                ProgressView("Preparing admin panel...")
+            } else if let token = token {
+                AdminView(
+                    store: AdminStore(
+                        server: server,
+                        token: token,
+                        refreshPasswordSession: {
+                            try await appStore.authenticationToken(
+                                for: server,
+                                forcePasswordLogin: true
+                            )
+                        }
+                    )
+                )
             } else if let error = error {
                 VStack {
                     Image(systemName: "exclamationmark.triangle")
@@ -292,7 +381,7 @@ private struct AdminNavigationWrapper: View {
                     Text(error)
                         .padding()
                     Button("Retry") {
-                        Task { await resolveToken() }
+                        Task { await resolveToken(forcePasswordLogin: true) }
                     }
                 }
             } else {
@@ -300,26 +389,35 @@ private struct AdminNavigationWrapper: View {
             }
         }
         .task {
+            guard !didResolveInitialToken else { return }
+            didResolveInitialToken = true
             await resolveToken()
         }
     }
 
-    private func resolveToken() async {
+    private func resolveToken(forcePasswordLogin: Bool = false) async {
+        guard !isResolvingToken else { return }
+        isResolvingToken = true
+        defer { isResolvingToken = false }
+        error = nil
         do {
-            let client = KomariClient(profile: server)
             switch server.authType {
             case .guest:
                 error = "Guest mode not supported"
             case .apiKey:
-                token = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            case .password:
-                if !server.sessionToken.isEmpty {
-                    token = server.sessionToken
-                } else {
-                    token = try await client.login()
+                let apiKey = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if apiKey.isEmpty {
+                    throw KomariClientError.invalidConfiguration("API Key is required")
                 }
+                token = apiKey
+            case .password:
+                token = try await appStore.authenticationToken(
+                    for: server,
+                    forcePasswordLogin: forcePasswordLogin
+                )
             }
         } catch {
+            token = nil
             self.error = error.localizedDescription
         }
     }
