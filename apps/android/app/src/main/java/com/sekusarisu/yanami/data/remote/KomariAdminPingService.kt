@@ -4,6 +4,7 @@ import com.sekusarisu.yanami.data.remote.dto.AdminEnvelopeDto
 import com.sekusarisu.yanami.data.remote.dto.AdminPingTaskDto
 import com.sekusarisu.yanami.data.remote.dto.PingTaskCreateResultDto
 import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -31,11 +32,12 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
     suspend fun listPingTasks(
         baseUrl: String,
         sessionToken: String,
-        authType: AuthType
+        authType: AuthType,
+        customHeaders: List<CustomHeader>
     ): List<AdminPingTaskDto> {
         val response =
             httpClient.get(baseUrl.trimEnd('/') + "/api/admin/ping/") {
-                applyAdminAuth(sessionToken, authType)
+                applyAdminAuth(sessionToken, authType, customHeaders)
             }
         return parseData(response, ListSerializer(AdminPingTaskDto.serializer()))
     }
@@ -44,11 +46,12 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         payload: JsonObject
     ): Int {
         val response =
             httpClient.post(baseUrl.trimEnd('/') + "/api/admin/ping/add") {
-                applyAdminAuth(sessionToken, authType)
+                applyAdminAuth(sessionToken, authType, customHeaders)
                 contentType(ContentType.Application.Json)
                 setBody(payload.toString())
             }
@@ -59,6 +62,7 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         tasks: List<JsonObject>
     ) {
         val payload =
@@ -69,7 +73,7 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
             }
         val response =
             httpClient.post(baseUrl.trimEnd('/') + "/api/admin/ping/edit") {
-                applyAdminAuth(sessionToken, authType)
+                applyAdminAuth(sessionToken, authType, customHeaders)
                 contentType(ContentType.Application.Json)
                 setBody(payload.toString())
             }
@@ -80,6 +84,7 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         ids: List<Int>
     ) {
         val payload =
@@ -90,7 +95,7 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
             }
         val response =
             httpClient.post(baseUrl.trimEnd('/') + "/api/admin/ping/delete") {
-                applyAdminAuth(sessionToken, authType)
+                applyAdminAuth(sessionToken, authType, customHeaders)
                 contentType(ContentType.Application.Json)
                 setBody(payload.toString())
             }
@@ -101,6 +106,7 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         weights: Map<Int, Int>
     ) {
         val payload =
@@ -111,32 +117,43 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
             }
         val response =
             httpClient.post(baseUrl.trimEnd('/') + "/api/admin/ping/order") {
-                applyAdminAuth(sessionToken, authType)
+                applyAdminAuth(sessionToken, authType, customHeaders)
                 contentType(ContentType.Application.Json)
                 setBody(payload.toString())
             }
         parseNoContent(response)
     }
 
-    private fun io.ktor.client.request.HttpRequestBuilder.applyAdminAuth(
-        sessionToken: String,
-        authType: AuthType
-    ) {
-        if (authType == AuthType.GUEST) {
-            throw IllegalStateException("游客模式不支持 Ping Task 管理")
-        }
-        applyAuth(sessionToken, authType)
-    }
-
     private suspend fun <T> parseData(response: HttpResponse, serializer: KSerializer<T>): T {
+        val statusCode = response.status.value
         val responseText = response.bodyAsText()
-        val rawResult = runCatching { json.decodeFromString(serializer, responseText) }.getOrNull()
-        if (rawResult != null && response.status.value in 200..299) {
-            return rawResult
+        val envelope = parseEnvelopeIfPresent(statusCode, responseText)
+        if (envelope != null) {
+            val data =
+                envelope.data
+                    ?: throw AdminApiException(
+                        statusCode,
+                        missingRemoteDataMessage(statusCode)
+                    )
+            return runCatching { json.decodeFromJsonElement(serializer, data) }
+                .getOrElse {
+                    throw AdminApiException(
+                        statusCode,
+                        invalidRemoteResponseMessage(statusCode)
+                    )
+                }
         }
-        val envelope = parseEnvelope(response.status.value, responseText)
-        val data = envelope.data ?: throw AdminApiException(response.status.value, "响应缺少 data")
-        return json.decodeFromJsonElement(serializer, data)
+
+        if (statusCode !in 200..299) {
+            throw AdminApiException(statusCode, "HTTP $statusCode")
+        }
+        return runCatching { json.decodeFromString(serializer, responseText) }
+            .getOrElse {
+                throw AdminApiException(
+                    statusCode,
+                    invalidRemoteResponseMessage(statusCode)
+                )
+            }
     }
 
     private suspend fun parseNoContent(response: HttpResponse) {
@@ -144,26 +161,52 @@ class KomariAdminPingService(private val httpClient: HttpClient) {
         if (response.status.value in 200..299 && responseText.isBlank()) {
             return
         }
-        parseEnvelope(response.status.value, responseText)
+        if (parseEnvelopeIfPresent(response.status.value, responseText) == null) {
+            throw AdminApiException(
+                response.status.value,
+                invalidRemoteResponseMessage(response.status.value)
+            )
+        }
     }
 
-    private fun parseEnvelope(statusCode: Int, responseText: String): AdminEnvelopeDto {
+    private fun parseEnvelopeIfPresent(
+        statusCode: Int,
+        responseText: String
+    ): AdminEnvelopeDto? {
+        val root =
+            runCatching { json.parseToJsonElement(responseText) }
+                .getOrElse {
+                    throw AdminApiException(
+                        statusCode,
+                        invalidRemoteResponseMessage(statusCode)
+                    )
+                }
+        val rootObject = root as? JsonObject ?: return null
+        val isEnvelope =
+            rootObject.containsKey("status") ||
+                rootObject.containsKey("message") ||
+                rootObject.containsKey("data")
+        if (!isEnvelope) return null
+
         val envelope =
-            runCatching { json.decodeFromString(AdminEnvelopeDto.serializer(), responseText) }
-                .getOrNull()
-
-        if (envelope == null) {
-            val fallbackMessage = responseText.ifBlank { "HTTP $statusCode" }.take(200)
-            throw AdminApiException(statusCode, fallbackMessage)
-        }
-
+            runCatching {
+                    json.decodeFromJsonElement(AdminEnvelopeDto.serializer(), rootObject)
+                }
+                .getOrElse {
+                    throw AdminApiException(
+                        statusCode,
+                        invalidRemoteResponseMessage(statusCode)
+                    )
+                }
         if (statusCode !in 200..299 || envelope.status.equals("error", ignoreCase = true)) {
             throw AdminApiException(
                 statusCode = statusCode,
-                message = envelope.message.ifBlank { "HTTP $statusCode" }
+                message = safeRemoteErrorMessage(envelope.message, statusCode)
             )
         }
-
+        if (envelope.status.isBlank() && envelope.data == null) {
+            throw AdminApiException(statusCode, invalidRemoteResponseMessage(statusCode))
+        }
         return envelope
     }
 }

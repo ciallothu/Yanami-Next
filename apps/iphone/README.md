@@ -1,6 +1,6 @@
-# YanamiNext iPhone
+# Yanami-Next iPhone
 
-Native SwiftUI iPhone app for YanamiNext.
+Native SwiftUI iPhone app for Yanami Next.
 
 ## Scope
 
@@ -14,12 +14,8 @@ Native SwiftUI iPhone app for YanamiNext.
 ## Build
 
 ```bash
-BUILD_NUMBER=${GITHUB_RUN_NUMBER:-1}
-BRANCH_REF=${GITHUB_REF_NAME:-local}
-BRANCH_VERSION=$(printf '%s' "$BRANCH_REF" | tr '[:upper:]' '[:lower:]' | tr '/' '-' | sed -E 's/[^a-z0-9._-]+/-/g; s/-+/-/g; s/^-//; s/-$//')
-SHORT_SHA=${GITHUB_SHA:-local}
-SHORT_SHA=${SHORT_SHA:0:7}
-VERSION="YanamiNext-Build-${BRANCH_VERSION:-local}-${SHORT_SHA}"
+VERSION=$(tr -d '[:space:]' < ../../VERSION)
+BUILD_NUMBER=$(tr -d '[:space:]' < ../../VERSION_CODE)
 xcodebuild \
   -project Yanami.xcodeproj \
   -scheme Yanami \
@@ -32,14 +28,20 @@ xcodebuild \
   CODE_SIGN_IDENTITY="" \
   DEVELOPMENT_TEAM="" \
   PROVISIONING_PROFILE_SPECIFIER="" \
-  MARKETING_VERSION="1.0" \
+  MARKETING_VERSION="$VERSION" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   build
 mkdir -p ../../build/ios-ipa/Payload
-ditto ../../build/ios/Build/Products/Release-iphoneos/Yanami.app ../../build/ios-ipa/Payload/YanamiNext.app
-(cd ../../build/ios-ipa && ditto -c -k --sequesterRsrc --keepParent Payload "../${VERSION}.ipa")
+ditto ../../build/ios/Build/Products/Release-iphoneos/Yanami.app "../../build/ios-ipa/Payload/Yanami Next.app"
+(cd ../../build/ios-ipa && ditto -c -k --sequesterRsrc --keepParent Payload "../Yanami-Next-v${VERSION}-unsigned.ipa")
 ```
 
-The unsigned IPA is generated at `../../build/YanamiNext-Build-<branch>-<short-sha>.ipa`.
+The unsigned IPA is generated at `../../build/Yanami-Next-v<version>-unsigned.ipa`.
 
 The IPA must be signed before device installation.
+
+## Terminal dependency
+
+The native iOS terminal uses [SwiftTerm 1.15.0](https://github.com/migueldeicaza/SwiftTerm/tree/1.15.0), pinned to revision `dd2fb8ac5b861e7bf617c872895e338f38165648` in both the Xcode project and `Package.resolved`.
+
+The SwiftTerm MIT license is included in `Yanami/Resources/THIRD_PARTY_NOTICES.md` and copied into the application bundle.

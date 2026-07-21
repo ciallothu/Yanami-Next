@@ -9,7 +9,7 @@ struct ProfileStore {
             ?? PersistedAppState(servers: [], activeServerId: nil, settings: AppSettings())
     }
 
-    func save(_ state: PersistedAppState) {
-        try? keychain.save(state, account: account)
+    func save(_ state: PersistedAppState) throws {
+        try keychain.save(state, account: account)
     }
 }

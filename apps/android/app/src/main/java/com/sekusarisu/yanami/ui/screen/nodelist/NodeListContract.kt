@@ -27,6 +27,8 @@ object NodeListContract {
             val totalNetOut: Long = 0,
             val totalTrafficUp: Long = 0,
             val totalTrafficDown: Long = 0,
+            val currentTrafficUp: Long = 0,
+            val currentTrafficDown: Long = 0,
             val serverName: String = ""
     ) : UiState
 

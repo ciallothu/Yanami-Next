@@ -24,7 +24,11 @@
 		1A000000000000000000010F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000000000000000000020F /* Assets.xcassets */; };
 		1A0000000000000000000110 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000210 /* Localizable.strings */; };
 		1A0000000000000000000111 /* Localization.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000211 /* Localization.swift */; };
+		1A0000000000000000000112 /* SshTerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000212 /* SshTerminalViewModel.swift */; };
+		1A0000000000000000000113 /* RemoteTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000213 /* RemoteTerminalView.swift */; };
+		1A0000000000000000000114 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000214 /* THIRD_PARTY_NOTICES.md */; };
 		5AF6B639E800F23E05E7652B /* AdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C9B360DAFAD299B28943F6A /* AdminView.swift */; };
+		B10000000000000000000003 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000002 /* SwiftTerm */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +49,9 @@
 		1A000000000000000000020E /* Formatters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Formatters.swift; sourceTree = "<group>"; };
 		1A000000000000000000020F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1A0000000000000000000211 /* Localization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Localization.swift; sourceTree = "<group>"; };
+		1A0000000000000000000212 /* SshTerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshTerminalViewModel.swift; sourceTree = "<group>"; };
+		1A0000000000000000000213 /* RemoteTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalView.swift; sourceTree = "<group>"; };
+		1A0000000000000000000214 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
 		1A0000000000000000000410 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		1A0000000000000000000411 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		1A0000000000000000000412 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
@@ -56,6 +63,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B10000000000000000000003 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -106,6 +114,7 @@
 				1A0000000000000000000203 /* KeychainStore.swift */,
 				1A0000000000000000000204 /* ProfileStore.swift */,
 				1A0000000000000000000205 /* KomariClient.swift */,
+				1A0000000000000000000212 /* SshTerminalViewModel.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -128,9 +137,18 @@
 				1A000000000000000000020B /* NodeDetailView.swift */,
 				1A000000000000000000020C /* SettingsView.swift */,
 				1A000000000000000000020D /* Components.swift */,
+				1A0000000000000000000307 /* Terminal */,
 				5C9B360DAFAD299B28943F6A /* AdminView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		1A0000000000000000000307 /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000000000000000000213 /* RemoteTerminalView.swift */,
+			);
+			path = Terminal;
 			sourceTree = "<group>";
 		};
 		1A0000000000000000000305 /* Utilities */ = {
@@ -147,6 +165,7 @@
 			children = (
 				1A000000000000000000020F /* Assets.xcassets */,
 				1A0000000000000000000210 /* Localizable.strings */,
+				1A0000000000000000000214 /* THIRD_PARTY_NOTICES.md */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -180,6 +199,9 @@
 			dependencies = (
 			);
 			name = Yanami;
+			packageProductDependencies = (
+				B10000000000000000000002 /* SwiftTerm */,
+			);
 			productName = Yanami;
 			productReference = 1A0000000000000000000006 /* Yanami.app */;
 			productType = "com.apple.product-type.application";
@@ -210,6 +232,9 @@
 				ja,
 			);
 			mainGroup = 1A0000000000000000000003;
+			packageReferences = (
+				B10000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
 			productRefGroup = 1A0000000000000000000004 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -226,6 +251,7 @@
 			files = (
 				1A000000000000000000010F /* Assets.xcassets in Resources */,
 				1A0000000000000000000110 /* Localizable.strings in Resources */,
+				1A0000000000000000000114 /* THIRD_PARTY_NOTICES.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -251,11 +277,32 @@
 				1A000000000000000000010D /* Components.swift in Sources */,
 				1A000000000000000000010E /* Formatters.swift in Sources */,
 				1A0000000000000000000111 /* Localization.swift in Sources */,
+				1A0000000000000000000112 /* SshTerminalViewModel.swift in Sources */,
+				1A0000000000000000000113 /* RemoteTerminalView.swift in Sources */,
 				5AF6B639E800F23E05E7652B /* AdminView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B10000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {
+				kind = revision;
+				revision = dd2fb8ac5b861e7bf617c872895e338f38165648;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B10000000000000000000002 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000001 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		1A000000000000000000000D /* Debug */ = {
@@ -377,19 +424,19 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10000;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = YanamiNext;
+				INFOPLIST_KEY_CFBundleDisplayName = "Yanami Next";
 				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "YanamiNext uses Face ID to unlock the app.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Yanami Next uses Face ID to unlock the app.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sekusarisu.yanami.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -406,19 +453,19 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 10000;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = YanamiNext;
+				INFOPLIST_KEY_CFBundleDisplayName = "Yanami Next";
 				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_NSFaceIDUsageDescription = "YanamiNext uses Face ID to unlock the app.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Yanami Next uses Face ID to unlock the app.";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.sekusarisu.yanami.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

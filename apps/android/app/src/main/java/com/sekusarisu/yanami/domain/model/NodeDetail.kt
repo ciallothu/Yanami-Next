@@ -15,7 +15,12 @@ data class LoadRecord(
         val load: Double,
         val process: Int,
         val connections: Int,
-        val connectionsUdp: Int = 0
+        val connectionsUdp: Int = 0,
+        val netTotalUp: Long = 0,
+        val netTotalDown: Long = 0,
+        /** Bytes transferred during this server sampling interval. */
+        val trafficUp: Long = 0,
+        val trafficDown: Long = 0
 )
 
 /**

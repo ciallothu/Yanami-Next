@@ -32,9 +32,16 @@ import com.sekusarisu.yanami.domain.model.Node
 import com.sekusarisu.yanami.domain.model.calculateExpiryStatus
 import com.sekusarisu.yanami.domain.model.calculateTrafficLimitUsage
 import com.sekusarisu.yanami.ui.screen.ExpiryBadge
+import com.sekusarisu.yanami.ui.format.formatIpAddress
 
 @Composable
-fun NodeCard(node: Node, onClick: () -> Unit, isExpanded: Boolean, modifier: Modifier = Modifier) {
+fun NodeCard(
+        node: Node,
+        onClick: () -> Unit,
+        isExpanded: Boolean,
+        modifier: Modifier = Modifier,
+        maskIpAddresses: Boolean = false
+) {
     Card(
             onClick = onClick,
             modifier = modifier.fillMaxWidth(),
@@ -69,6 +76,21 @@ fun NodeCard(node: Node, onClick: () -> Unit, isExpanded: Boolean, modifier: Mod
                     Spacer(modifier = Modifier.width(6.dp))
                 }
                 StatusBadge(isOnline = node.isOnline)
+            }
+
+            val addresses = buildList {
+                if (node.ipv4.isNotBlank()) add("IPv4 ${formatIpAddress(node.ipv4, maskIpAddresses)}")
+                if (node.ipv6.isNotBlank()) add("IPv6 ${formatIpAddress(node.ipv6, maskIpAddresses)}")
+            }
+            if (addresses.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                        text = addresses.joinToString("  ·  "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                )
             }
 
             if (!node.isOnline) {
@@ -137,6 +159,16 @@ fun NodeCard(node: Node, onClick: () -> Unit, isExpanded: Boolean, modifier: Mod
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                            text =
+                                    "${stringResource(R.string.node_net_interval_traffic)}  " +
+                                            "↑ ${formatBytes(node.trafficUp)}  ↓ ${formatBytes(node.trafficDown)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
 
                     Row(
                             modifier = Modifier.fillMaxWidth(),

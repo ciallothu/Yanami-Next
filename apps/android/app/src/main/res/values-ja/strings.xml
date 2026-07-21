@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">YanamiNext</string>
+    <string name="app_name">Yanami Next</string>
 
     <!-- 共通 -->
     <string name="action_back">戻る</string>
@@ -41,6 +41,8 @@
     <string name="add_server_name_label">サーバー名</string>
     <string name="add_server_name_hint">例: マイ Komari</string>
     <string name="add_server_url_label">サーバーアドレス</string>
+    <string name="add_server_url_invalid">サーバーアドレスは、認証情報、クエリ、フラグメントを含まない有効な HTTPS URL にしてください</string>
+    <string name="add_server_header_name_reserved">ヘッダー「%1$s」はアプリが管理するため上書きできません</string>
     <string name="add_server_url_hint">https://komari.example.com</string>
     <string name="add_server_username_label">ユーザー名</string>
     <string name="add_server_username_hint">admin</string>
@@ -56,6 +58,16 @@
     <string name="add_server_fill_all">すべての情報を入力してください</string>
     <string name="add_server_saved">サーバーを追加しました</string>
     <string name="add_server_save_failed">保存失敗: %s</string>
+    <string name="add_server_custom_headers_title">カスタムヘッダー</string>
+    <string name="add_server_header_name_label">ヘッダー名</string>
+    <string name="add_server_header_name_hint">CF-Access-Client-Id</string>
+    <string name="add_server_header_value_label">ヘッダー値</string>
+    <string name="add_server_add_header">ヘッダーを追加</string>
+    <string name="add_server_remove_header">ヘッダーを削除</string>
+    <string name="add_server_header_name_required">ヘッダー名を入力してください</string>
+    <string name="add_server_header_value_required">ヘッダー値を入力してください</string>
+    <string name="add_server_header_name_invalid">無効なヘッダー名: %s</string>
+    <string name="add_server_header_name_duplicate">ヘッダー名が重複しています: %s</string>
 
     <!-- 認証タイプ -->
     <string name="auth_type_password">パスワード</string>
@@ -94,7 +106,12 @@
     <string name="node_traffic_up">アップロード総通信量</string>
     <string name="node_traffic_down">ダウンロード総通信量</string>
     <string name="node_net_speed">リアルタイム速度</string>
-    <string name="node_net_traffic">総通信量</string>
+    <string name="node_net_traffic">通信量</string>
+    <string name="node_net_interval_traffic">現在のトラフィック</string>
+    <string name="node_ipv4">IPv4</string>
+    <string name="node_ipv6">IPv6</string>
+    <string name="settings_mask_ip">IP アドレスを隠す</string>
+    <string name="settings_mask_ip_desc">ノード一覧と詳細で IP アドレスの一部を隠します</string>
     <string name="client_management_title">クライアント管理</string>
     <string name="client_management_search">クライアントを検索…</string>
     <string name="client_management_total_count">%1$d / %2$d を表示中</string>
@@ -220,12 +237,15 @@
     <string name="node_detail_kernel">カーネル</string>
     <string name="node_detail_platform">プラットフォーム</string>
     <string name="node_detail_cpu">CPU</string>
+    <string name="node_detail_agent_version">Agent バージョン</string>
+    <string name="node_detail_tags">タグ</string>
+    <string name="node_detail_remark">備考</string>
     <string name="node_detail_cores">コア数</string>
     <string name="node_detail_cpu_usage">CPU使用率</string>
     <string name="node_detail_ram">メモリ</string>
     <string name="node_detail_disk">ディスク</string>
     <string name="node_detail_net_speed">ネットワーク速度</string>
-    <string name="node_detail_net_traffic">総通信量</string>
+    <string name="node_detail_net_traffic">通信量</string>
     <string name="node_detail_traffic_limit">通信量しきい値</string>
     <string name="node_detail_connections">接続数</string>
     <string name="node_detail_process">プロセス数</string>
@@ -260,9 +280,9 @@
     <string name="settings_backup">バックアップ</string>
     <string name="settings_others">その他</string>
     <string name="settings_export_config">設定をエクスポート</string>
-    <string name="settings_export_config_desc">サーバーと snippets を JSON ファイルへ書き出します</string>
+    <string name="settings_export_config_desc">パスワード、トークン、認証ヘッダー、snippets を含まない安全な JSON を書き出します</string>
     <string name="settings_import_config">設定をインポート</string>
-    <string name="settings_import_config_desc">JSON ファイルからサーバーと snippets をマージして取り込みます</string>
+    <string name="settings_import_config_desc">バックアップを統合し、認証情報がないサーバーは再認証します</string>
     <string name="settings_export_success">%1$d 個のサーバーと %2$d 個の snippets を書き出しました</string>
     <string name="settings_export_failed">エクスポート失敗: %1$s</string>
     <string name="settings_import_success">インポート完了: サーバー %1$d 件追加 / %2$d 件更新、snippets %3$d 件追加 / %4$d 件更新</string>
@@ -333,6 +353,10 @@
     <string name="settings_biometric_desc">有効にすると生体認証またはデバイスパスワードが必要です</string>
     <string name="biometric_prompt_title">認証</string>
     <string name="biometric_prompt_subtitle">生体認証またはデバイスパスワードで認証してください</string>
+    <string name="biometric_unavailable">利用可能な生体認証または端末認証が設定されていません</string>
+    <string name="biometric_locked_title">Yanami Next はロックされています</string>
+    <string name="biometric_locked_description">続行するには認証してください</string>
+    <string name="biometric_unlock_action">ロック解除</string>
 
     <!-- アップデート確認 -->
     <string name="update_check">アップデートを確認</string>

@@ -1,5 +1,13 @@
 import Foundation
 
+enum AppMetadata {
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+    }
+
+    static var userAgent: String { "Yanami-Next-iPhone/\(version)" }
+}
+
 enum AuthType: String, CaseIterable, Codable, Identifiable {
     case password
     case apiKey
@@ -85,6 +93,22 @@ struct ServerProfile: Codable, Equatable, Identifiable {
         baseURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmedTrailingSlash()
     }
 
+    var validatedBaseURL: URL? {
+        let value = normalizedBaseURL
+        guard value.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }),
+              let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https",
+              components.host?.isEmpty == false,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil else {
+            return nil
+        }
+        return components.url
+    }
+
     var sanitizedCustomHeaders: [CustomHeader] {
         customHeaders
             .map {
@@ -94,7 +118,29 @@ struct ServerProfile: Codable, Equatable, Identifiable {
                     value: $0.value.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
-            .filter { !$0.name.isEmpty && !$0.value.isEmpty }
+            .filter {
+                !$0.name.isEmpty &&
+                !$0.value.isEmpty &&
+                Self.isAllowedCustomHeader($0.name) &&
+                $0.value.utf8.count <= 8_192 &&
+                !$0.value.contains(where: { $0 == "\r" || $0 == "\n" || $0 == "\0" })
+            }
+    }
+
+    private static func isAllowedCustomHeader(_ name: String) -> Bool {
+        let scalars = name.unicodeScalars
+        guard (1...128).contains(scalars.count), scalars.allSatisfy({ scalar in
+            let value = scalar.value
+            return (0x30...0x39).contains(value) ||
+                (0x41...0x5A).contains(value) ||
+                (0x61...0x7A).contains(value) ||
+                "!#$%&'*+-.^_`|~".unicodeScalars.contains(scalar)
+        }) else {
+            return false
+        }
+        return !Set([
+            "authorization", "cookie", "host", "content-length", "connection", "upgrade", "origin"
+        ]).contains(name.lowercased())
     }
 }
 
@@ -154,7 +200,11 @@ struct KomariNode: Identifiable, Equatable {
     var name: String
     var region: String
     var group: String
+    var ipv4: String
+    var ipv6: String
     var isOnline: Bool
+    /// Timestamp reported by Komari for the latest agent sample.
+    var statusTime: String
     var cpuUsage: Double
     var memUsed: Int64
     var memTotal: Int64
@@ -166,6 +216,9 @@ struct KomariNode: Identifiable, Equatable {
     var netOut: Int64
     var netTotalUp: Int64
     var netTotalDown: Int64
+    /// Bytes transferred during the latest agent sampling interval.
+    var trafficUp: Int64
+    var trafficDown: Int64
     var uptime: Int64
     var os: String
     var cpuName: String
@@ -187,7 +240,7 @@ struct KomariNode: Identifiable, Equatable {
 
     var statusText: String { isOnline ? "Online" : "Offline" }
 
-    var trafficUsage: (used: Int64, percent: Double)? {
+    var trafficLimitUsage: (used: Int64, fraction: Double)? {
         guard trafficLimit > 0 else { return nil }
         let kind = trafficLimitType.lowercased()
         let used: Int64
@@ -198,7 +251,7 @@ struct KomariNode: Identifiable, Equatable {
         case "down": used = netTotalDown
         default: used = netTotalUp + netTotalDown
         }
-        return (used, min(Double(used) / Double(trafficLimit), 1))
+        return (used, Double(used) / Double(trafficLimit))
     }
 }
 
@@ -210,10 +263,89 @@ struct LoadRecord: Identifiable, Equatable {
     let diskPercent: Double
     let netIn: Int64
     let netOut: Int64
+    let netTotalUp: Int64
+    let netTotalDown: Int64
+    /// Bytes transferred during this Komari sampling interval.
+    let trafficUp: Int64
+    let trafficDown: Int64
     let load: Double
     let process: Int
     let connections: Int
     let connectionsUdp: Int
+}
+
+/// Komari agents may reset cumulative counters after a restart.
+func resetAwareTrafficDelta(previous: Int64?, current: Int64?) -> Int64 {
+    guard let previous, let current, previous >= 0, current >= 0 else { return 0 }
+    return current >= previous ? current - previous : current
+}
+
+/// Returns true only when an incoming latest-status sample can safely advance the stored state.
+/// Timestamped samples must be strictly newer. Legacy undated samples need monotonic evidence so
+/// duplicate refreshes cannot erase the previously calculated traffic delta.
+func shouldAcceptStatusSample(
+    current: KomariNode,
+    incomingTime: String?,
+    incomingUptime: Int64?,
+    incomingTotalUp: Int64?,
+    incomingTotalDown: Int64?
+) -> Bool {
+    let storedTime = current.statusTime.trimmingCharacters(in: .whitespacesAndNewlines)
+    let candidateTime = (incomingTime ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+    if !candidateTime.isEmpty {
+        if storedTime.isEmpty { return true }
+        if candidateTime == storedTime { return false }
+        guard let storedDate = parseStatusDate(storedTime),
+              let candidateDate = parseStatusDate(candidateTime) else {
+            return false
+        }
+        return candidateDate > storedDate
+    }
+    if !storedTime.isEmpty { return false }
+
+    let hasBaseline = current.isOnline ||
+        current.uptime != 0 ||
+        current.netTotalUp != 0 ||
+        current.netTotalDown != 0 ||
+        current.netIn != 0 ||
+        current.netOut != 0 ||
+        current.memUsed != 0 ||
+        current.diskUsed != 0 ||
+        current.cpuUsage != 0
+    if !hasBaseline { return true }
+
+    if let incomingUptime, incomingUptime > current.uptime { return true }
+    let uptimeDidNotRegress = incomingUptime.map { $0 == current.uptime } ?? true
+    guard uptimeDidNotRegress,
+          let incomingTotalUp,
+          let incomingTotalDown,
+          incomingTotalUp >= current.netTotalUp,
+          incomingTotalDown >= current.netTotalDown else {
+        return false
+    }
+    return incomingTotalUp > current.netTotalUp || incomingTotalDown > current.netTotalDown
+}
+
+private func parseStatusDate(_ value: String) -> Date? {
+    let fractionalFormatter = ISO8601DateFormatter()
+    fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = fractionalFormatter.date(from: value) { return date }
+
+    let internetFormatter = ISO8601DateFormatter()
+    internetFormatter.formatOptions = [.withInternetDateTime]
+    if let date = internetFormatter.date(from: value) { return date }
+
+    let localFormatter = DateFormatter()
+    localFormatter.locale = Locale(identifier: "en_US_POSIX")
+    localFormatter.calendar = Calendar(identifier: .gregorian)
+    localFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+    localFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    if let date = localFormatter.date(from: value) { return date }
+
+    guard let numeric = Double(value), numeric.isFinite else { return nil }
+    let seconds = abs(numeric) < 100_000_000_000 ? numeric : numeric / 1_000
+    return Date(timeIntervalSince1970: seconds)
 }
 
 struct PingTask: Identifiable, Equatable {

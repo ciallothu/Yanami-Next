@@ -73,11 +73,11 @@ internal suspend fun HttpClient.connectKomariWebSocket(
         endpoint: KomariWebSocketEndpoint,
         sessionToken: String,
         authType: AuthType,
-        customHeaders: List<CustomHeader> = emptyList(),
+        customHeaders: List<CustomHeader>,
         block: suspend DefaultClientWebSocketSession.() -> Unit
 ) {
     val requestBuilder: HttpRequestBuilder.() -> Unit = {
-        applyCustomHeaders(customHeaders)
+        applyCustomHeaders(customHeaders.toList())
         applyAuth(sessionToken, authType)
         header("Origin", endpoint.origin)
     }
@@ -105,7 +105,7 @@ internal suspend fun HttpClient.runKomariWebSocketLifecycle(
         endpoint: KomariWebSocketEndpoint,
         sessionToken: String,
         authType: AuthType,
-        customHeaders: List<CustomHeader> = emptyList(),
+        customHeaders: List<CustomHeader>,
         loggerTag: String,
         reconnectDelayMs: Long? = null,
         maxReconnectDelayMs: Long? = reconnectDelayMs,

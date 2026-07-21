@@ -56,6 +56,7 @@ class ClientCreateViewModel(
                                 baseUrl = server.baseUrl,
                                 sessionToken = sessionToken,
                                 authType = server.authType,
+                                customHeaders = server.customHeaders.toList(),
                                 name = currentState.name.trim().ifEmpty { null }
                         )
                 setState { copy(isSaving = false, createdResult = result) }

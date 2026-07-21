@@ -135,6 +135,15 @@ private fun formatChartSpeed(bytesPerSec: Double): String {
     }
 }
 
+private fun formatChartBytes(bytes: Double): String {
+    return when {
+        bytes >= 1_073_741_824 -> "%.1f GB".format(bytes / 1_073_741_824)
+        bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576)
+        bytes >= 1024 -> "%.0f KB".format(bytes / 1024)
+        else -> "%.0f B".format(bytes)
+    }
+}
+
 @Composable
 internal fun ChartCard(
         title: String,
@@ -319,8 +328,10 @@ internal fun NetworkChartCard(
         netInData: List<Double>,
         netOutData: List<Double>,
         times: List<String>,
-        chartAnimationEnabled: Boolean = true
+        chartAnimationEnabled: Boolean = true,
+        showAsSpeed: Boolean = true
 ) {
+    val formatter: (Double) -> String = if (showAsSpeed) ::formatChartSpeed else ::formatChartBytes
     val upLine = rememberThemedLine(MaterialTheme.colorScheme.primary)
     val downLine = rememberThemedLine(MaterialTheme.colorScheme.tertiary)
     Column {
@@ -337,13 +348,13 @@ internal fun NetworkChartCard(
             Text(
                     text = buildAnnotatedString {
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.tertiary)) {
-                            append("↓ " + formatChartSpeed(netInData.last()))
+                            append("↓ " + formatter(netInData.last()))
                         }
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
                             append(" / ")
                         }
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("↑ " + formatChartSpeed(netOutData.last()))
+                            append("↑ " + formatter(netOutData.last()))
                         }
                     },
                     style = MaterialTheme.typography.labelMedium
@@ -362,8 +373,8 @@ internal fun NetworkChartCard(
                 }
             }
 
-            val yAxisFormatter = remember {
-                CartesianValueFormatter { _, value, _ -> formatChartSpeed(value) }
+            val yAxisFormatter = remember(showAsSpeed) {
+                CartesianValueFormatter { _, value, _ -> formatter(value) }
             }
             val xAxisFormatter =
                     remember(times) {

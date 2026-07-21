@@ -62,14 +62,16 @@ class AboutScreen : Screen {
         val viewModel = koinScreenModel<AboutViewModel>()
         val state by viewModel.state.collectAsState()
         val adaptiveInfo = rememberAdaptiveLayoutInfo()
+        val updateCheckFailedMessage = stringResource(R.string.update_check_failed)
+        val updateAlreadyLatestMessage = stringResource(R.string.update_already_latest)
 
-        LaunchedEffect(Unit) {
+        LaunchedEffect(updateCheckFailedMessage, updateAlreadyLatestMessage) {
             viewModel.effect.collect { effect ->
                 when (effect) {
                     is AboutEffect.ShowToast -> {
                         val message = when (effect.message) {
-                            "update_check_failed" -> context.getString(R.string.update_check_failed)
-                            "update_already_latest" -> context.getString(R.string.update_already_latest)
+                            "update_check_failed" -> updateCheckFailedMessage
+                            "update_already_latest" -> updateAlreadyLatestMessage
                             else -> effect.message
                         }
                         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -107,7 +109,7 @@ class AboutScreen : Screen {
                                 title = stringResource(R.string.about_github),
                                 subtitle = stringResource(R.string.about_github_desc),
                                 onClick = soundClick {
-                                    uriHandler.openUri("https://github.com/ciallothu/YanamiNext")
+                                    uriHandler.openUri("https://github.com/ciallothu/Yanami-Next")
                                 }
                         )
                     }

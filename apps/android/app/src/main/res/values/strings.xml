@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">YanamiNext</string>
+    <string name="app_name">Yanami Next</string>
 
     <!-- 通用 -->
     <string name="action_back">返回</string>
@@ -41,6 +41,8 @@
     <string name="add_server_name_label">服务器名称</string>
     <string name="add_server_name_hint">例: 我的 Komari</string>
     <string name="add_server_url_label">服务器地址</string>
+    <string name="add_server_url_invalid">服务器地址必须是有效的 HTTPS URL，且不能包含账号、查询参数或片段</string>
+    <string name="add_server_header_name_reserved">请求头“%1$s”由应用管理，不能自定义</string>
     <string name="add_server_url_hint">https://komari.example.com</string>
     <string name="add_server_username_label">用户名</string>
     <string name="add_server_username_hint">admin</string>
@@ -104,7 +106,12 @@
     <string name="node_traffic_up">上传总流量</string>
     <string name="node_traffic_down">下载总流量</string>
     <string name="node_net_speed">实时速度</string>
-    <string name="node_net_traffic">总流量</string>
+    <string name="node_net_traffic">流量用量</string>
+    <string name="node_net_interval_traffic">本次流量</string>
+    <string name="node_ipv4">IPv4</string>
+    <string name="node_ipv6">IPv6</string>
+    <string name="settings_mask_ip">隐藏 IP 地址</string>
+    <string name="settings_mask_ip_desc">在节点列表和详情中遮盖 IP 地址</string>
     <string name="client_management_title">客户端管理</string>
     <string name="client_management_search">搜索客户端…</string>
     <string name="client_management_total_count">已显示 %1$d / %2$d</string>
@@ -230,12 +237,15 @@
     <string name="node_detail_kernel">内核版本</string>
     <string name="node_detail_platform">平台 / 架构</string>
     <string name="node_detail_cpu">处理器</string>
+    <string name="node_detail_agent_version">Agent 版本</string>
+    <string name="node_detail_tags">标签</string>
+    <string name="node_detail_remark">备注</string>
     <string name="node_detail_cores">核心</string>
     <string name="node_detail_cpu_usage">CPU 使用率</string>
     <string name="node_detail_ram">内存</string>
     <string name="node_detail_disk">磁盘</string>
     <string name="node_detail_net_speed">网络速度</string>
-    <string name="node_detail_net_traffic">总流量</string>
+    <string name="node_detail_net_traffic">流量用量</string>
     <string name="node_detail_traffic_limit">流量阈值</string>
     <string name="node_detail_connections">连接</string>
     <string name="node_detail_process">进程</string>
@@ -270,9 +280,9 @@
     <string name="settings_backup">备份</string>
     <string name="settings_others">其他</string>
     <string name="settings_export_config">导出配置</string>
-    <string name="settings_export_config_desc">导出服务器与 snippets 到 JSON 文件</string>
+    <string name="settings_export_config_desc">导出不含密码、令牌、鉴权请求头和 snippets 的安全 JSON</string>
     <string name="settings_import_config">导入配置</string>
-    <string name="settings_import_config_desc">从 JSON 文件合并导入服务器与 snippets</string>
+    <string name="settings_import_config_desc">合并导入配置；缺少凭据的服务器需重新认证</string>
     <string name="settings_export_success">已导出 %1$d 个服务器，%2$d 个 snippets</string>
     <string name="settings_export_failed">导出失败: %1$s</string>
     <string name="settings_import_success">导入完成：新增 %1$d / 更新 %2$d 个服务器，新增 %3$d / 更新 %4$d 个 snippets</string>
@@ -344,6 +354,10 @@
     <string name="settings_biometric_desc">启用后每次打开应用需通过生物识别或设备密码验证</string>
     <string name="biometric_prompt_title">身份验证</string>
     <string name="biometric_prompt_subtitle">请通过生物识别或设备密码以继续</string>
+    <string name="biometric_unavailable">设备未配置可用的生物识别或锁屏凭据</string>
+    <string name="biometric_locked_title">Yanami Next 已锁定</string>
+    <string name="biometric_locked_description">请验证身份后继续使用</string>
+    <string name="biometric_unlock_action">解锁</string>
 
     <!-- 更新检查 -->
     <string name="update_check">检查更新</string>

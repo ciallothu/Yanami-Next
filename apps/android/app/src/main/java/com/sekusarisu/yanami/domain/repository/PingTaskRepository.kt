@@ -1,6 +1,7 @@
 package com.sekusarisu.yanami.domain.repository
 
 import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.AdminPingTask
 import com.sekusarisu.yanami.domain.model.AdminPingTaskDraft
 
@@ -8,13 +9,15 @@ interface PingTaskRepository {
     suspend fun listPingTasks(
         baseUrl: String,
         sessionToken: String,
-        authType: AuthType
+        authType: AuthType,
+        customHeaders: List<CustomHeader>
     ): List<AdminPingTask>
 
     suspend fun addPingTask(
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         draft: AdminPingTaskDraft
     ): Int
 
@@ -22,6 +25,7 @@ interface PingTaskRepository {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         tasks: List<AdminPingTask>
     )
 
@@ -29,6 +33,7 @@ interface PingTaskRepository {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         ids: List<Int>
     )
 
@@ -36,6 +41,7 @@ interface PingTaskRepository {
         baseUrl: String,
         sessionToken: String,
         authType: AuthType,
+        customHeaders: List<CustomHeader>,
         weights: Map<Int, Int>
     )
 }

@@ -104,7 +104,8 @@ class ClientManagementViewModel(
                         clientRepository.listClients(
                                 baseUrl = server.baseUrl,
                                 sessionToken = sessionToken,
-                                authType = server.authType
+                                authType = server.authType,
+                                customHeaders = server.customHeaders.toList()
                         )
                 hasLoadedOnce = true
                 updateClientsState(clients)
@@ -141,7 +142,8 @@ class ClientManagementViewModel(
                         clientRepository.listClients(
                                 baseUrl = server.baseUrl,
                                 sessionToken = sessionToken,
-                                authType = server.authType
+                                authType = server.authType,
+                                customHeaders = server.customHeaders.toList()
                         )
                 hasLoadedOnce = true
                 updateClientsState(clients)
@@ -193,6 +195,7 @@ class ClientManagementViewModel(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
                         authType = server.authType,
+                        customHeaders = server.customHeaders.toList(),
                         uuid = target.uuid
                 )
                 sendEffect(
@@ -234,6 +237,7 @@ class ClientManagementViewModel(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
                         authType = server.authType,
+                        customHeaders = server.customHeaders.toList(),
                         weights = mapOf(current.uuid to target.weight, target.uuid to current.weight)
                 )
                 setState { copy(isReordering = false) }
@@ -274,6 +278,7 @@ class ClientManagementViewModel(
                         baseUrl = server.baseUrl,
                         sessionToken = sessionToken,
                         authType = server.authType,
+                        customHeaders = server.customHeaders.toList(),
                         weights = reorderedWeights.toMap()
                 )
                 setState { copy(isReordering = false) }

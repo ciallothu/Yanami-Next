@@ -16,6 +16,8 @@ object NodeDetailContract {
             val ramSeries: List<Double> = emptyList(),
             val netInSeries: List<Double> = emptyList(),
             val netOutSeries: List<Double> = emptyList(),
+            val trafficUpSeries: List<Double> = emptyList(),
+            val trafficDownSeries: List<Double> = emptyList(),
             val tcpSeries: List<Int> = emptyList(),
             val udpSeries: List<Int> = emptyList(),
             val processSeries: List<Double> = emptyList()

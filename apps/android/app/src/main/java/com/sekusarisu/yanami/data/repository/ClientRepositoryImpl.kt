@@ -3,6 +3,7 @@ package com.sekusarisu.yanami.data.repository
 import com.sekusarisu.yanami.data.remote.KomariAdminClientService
 import com.sekusarisu.yanami.data.remote.dto.ManagedClientDto
 import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.ManagedClient
 import com.sekusarisu.yanami.domain.model.ManagedClientCreateResult
 import com.sekusarisu.yanami.domain.model.ManagedClientDraft
@@ -14,27 +15,36 @@ class ClientRepositoryImpl(private val service: KomariAdminClientService) : Clie
     override suspend fun listClients(
             baseUrl: String,
             sessionToken: String,
-            authType: AuthType
+            authType: AuthType,
+            customHeaders: List<CustomHeader>
     ): List<ManagedClient> {
-        return service.listClients(baseUrl, sessionToken, authType).map { it.toDomain() }.sortClients()
+        return service
+                .listClients(baseUrl, sessionToken, authType, customHeaders.toList())
+                .map { it.toDomain() }
+                .sortClients()
     }
 
     override suspend fun getClient(
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ): ManagedClient {
-        return service.getClient(baseUrl, sessionToken, authType, uuid).toDomain()
+        return service
+                .getClient(baseUrl, sessionToken, authType, customHeaders.toList(), uuid)
+                .toDomain()
     }
 
     override suspend fun addClient(
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             name: String?
     ): ManagedClientCreateResult {
-        val result = service.addClient(baseUrl, sessionToken, authType, name)
+        val result =
+                service.addClient(baseUrl, sessionToken, authType, customHeaders.toList(), name)
         return ManagedClientCreateResult(uuid = result.uuid, token = result.token)
     }
 
@@ -42,6 +52,7 @@ class ClientRepositoryImpl(private val service: KomariAdminClientService) : Clie
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String,
             draft: ManagedClientDraft
     ) {
@@ -49,6 +60,7 @@ class ClientRepositoryImpl(private val service: KomariAdminClientService) : Clie
                 baseUrl = baseUrl,
                 sessionToken = sessionToken,
                 authType = authType,
+                customHeaders = customHeaders.toList(),
                 uuid = uuid,
                 payload = draft.toUpdatePayload()
         )
@@ -58,27 +70,42 @@ class ClientRepositoryImpl(private val service: KomariAdminClientService) : Clie
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ) {
-        service.deleteClient(baseUrl, sessionToken, authType, uuid)
+        service.deleteClient(baseUrl, sessionToken, authType, customHeaders.toList(), uuid)
     }
 
     override suspend fun getClientToken(
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             uuid: String
     ): String {
-        return service.getClientToken(baseUrl, sessionToken, authType, uuid)
+        return service.getClientToken(
+                baseUrl,
+                sessionToken,
+                authType,
+                customHeaders.toList(),
+                uuid
+        )
     }
 
     override suspend fun reorderClients(
             baseUrl: String,
             sessionToken: String,
             authType: AuthType,
+            customHeaders: List<CustomHeader>,
             weights: Map<String, Int>
     ) {
-        service.reorderClients(baseUrl, sessionToken, authType, weights)
+        service.reorderClients(
+                baseUrl,
+                sessionToken,
+                authType,
+                customHeaders.toList(),
+                weights
+        )
     }
 }
 

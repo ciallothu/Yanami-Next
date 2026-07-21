@@ -1,5 +1,7 @@
 package com.sekusarisu.yanami.ui.screen.terminal
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.inputmethod.InputMethodManager
@@ -49,8 +51,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -63,7 +63,6 @@ import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.TerminalSnippet
 import com.sekusarisu.yanami.ui.screen.rememberAdaptiveLayoutInfo
 import com.sekusarisu.yanami.ui.screen.soundClick
-import com.termux.terminal.TerminalEmulator
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
@@ -362,168 +361,107 @@ private fun SnippetListItem(
 
 @Composable
 internal fun TerminalContent(viewModel: SshTerminalViewModel, fontSize: Int) {
-    val terminalViewRef = remember { mutableStateOf<TerminalView?>(null) }
-
     DisposableEffect(Unit) {
         onDispose {
             viewModel.clientBridge.onTextChanged = {}
-            terminalViewRef.value = null
+            viewModel.clientBridge.onCopyText = {}
+            viewModel.clientBridge.onPasteRequested = {}
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        AndroidView(
-                factory = { ctx ->
-                    TerminalView(ctx, null).apply {
-                        setTextSize(fontSize)
-                        attachSession(viewModel.terminalBridge.session)
-                        setTerminalViewClient(buildDisplayOnlyClient())
-                        viewModel.clientBridge.onTextChanged = { post { invalidate() } }
-                        terminalViewRef.value = this
-                        addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
-                            if (r - l > 0 && b - t > 0) {
-                                post { readAndSendEmulatorSize(viewModel) }
-                            }
-                        }
-                    }
-                },
-                update = { view -> view.setTextSize(fontSize) },
-                modifier = Modifier.fillMaxSize()
-        )
-
-        AndroidView(
-                factory = { ctx ->
-                    TerminalInputCapture(ctx).apply {
-                        onInput = viewModel::sendInput
-                        onTouchInput = { event ->
-                            handleTouchAsTerminalMouse(
-                                    event = event,
-                                    terminalView = terminalViewRef.value,
-                                    sendRawInput = viewModel::sendRawInput
+    AndroidView(
+            factory = { ctx ->
+                val clipboard = ctx.getSystemService(ClipboardManager::class.java)
+                lateinit var terminalView: TerminalView
+                terminalView =
+                        TerminalView(ctx, null).apply {
+                            setTextSize(fontSize)
+                            setTerminalCursorBlinkerRate(500)
+                            setTerminalViewClient(
+                                    buildNativeTerminalClient(
+                                            viewModel = viewModel,
+                                            requestKeyboard = {
+                                                requestFocus()
+                                                ctx.getSystemService(InputMethodManager::class.java)
+                                                        .showSoftInput(
+                                                                this,
+                                                                InputMethodManager.SHOW_IMPLICIT
+                                                        )
+                                            },
+                                            postModifierReset = {
+                                                post { viewModel.consumeVirtualModifiers() }
+                                            },
+                                            onEmulatorSet = {
+                                                setTerminalCursorBlinkerState(true, true)
+                                            },
+                                            isSelected = { hasFocus() }
+                                    )
                             )
+                            attachSession(viewModel.terminalBridge.session)
+                            isFocusable = true
+                            isFocusableInTouchMode = true
+                            requestFocus()
                         }
-                        onFontSizeChange = { delta ->
-                            viewModel.onEvent(SshTerminalContract.Event.FontSizeChanged(delta))
-                        }
-                        isCursorAppMode = {
-                            viewModel.terminalBridge.session.emulator
-                                ?.isCursorKeysApplicationMode ?: false
-                        }
-                        requestFocus()
-                    }
-                },
-                modifier = Modifier.fillMaxSize()
-        )
-    }
-}
 
-private fun readAndSendEmulatorSize(viewModel: SshTerminalViewModel) {
-    val emulator = viewModel.terminalBridge.session.getEmulator() ?: return
-    val cls = emulator.javaClass
-    val cols =
-            try {
-                cls.getDeclaredField("mColumns").also { it.isAccessible = true }.getInt(emulator)
-            } catch (_: Exception) {
-                return
-            }
-    val rows =
-            try {
-                cls.getDeclaredField("mRows").also { it.isAccessible = true }.getInt(emulator)
-            } catch (_: Exception) {
-                return
-            }
-    if (cols > 0 && rows > 0) viewModel.sendResize(cols, rows)
-}
-
-private const val DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT = 1 shl 7
-private const val DECSET_BIT_MOUSE_PROTOCOL_SGR = 1 shl 9
-
-private fun handleTouchAsTerminalMouse(
-        event: MotionEvent,
-        terminalView: TerminalView?,
-        sendRawInput: (ByteArray) -> Unit
-) {
-    val view = terminalView ?: return
-    val session = view.currentSession ?: return
-    val emulator = session.emulator ?: return
-    if (!emulator.isMouseTrackingActive()) return
-
-    val action = event.actionMasked
-    val trackingMove = isDecsetBitSet(emulator, DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT)
-    val buttonAndPressed =
-            when (action) {
-                MotionEvent.ACTION_DOWN -> TerminalEmulator.MOUSE_LEFT_BUTTON to true
-                MotionEvent.ACTION_UP -> TerminalEmulator.MOUSE_LEFT_BUTTON to false
-                MotionEvent.ACTION_CANCEL -> TerminalEmulator.MOUSE_LEFT_BUTTON to false
-                MotionEvent.ACTION_MOVE -> {
-                    if (!trackingMove) return
-                    TerminalEmulator.MOUSE_LEFT_BUTTON_MOVED to true
+                viewModel.clientBridge.onTextChanged = { terminalView.post { terminalView.invalidate() } }
+                viewModel.clientBridge.onCopyText = { text ->
+                    clipboard?.setPrimaryClip(ClipData.newPlainText("Terminal text", text))
                 }
-                else -> return
-            }
-
-    val point = view.getColumnAndRow(event, false)
-    if (point.size < 2) return
-    val column = (point[0] + 1).coerceIn(1, emulator.mColumns)
-    val row = (point[1] + 1).coerceIn(1, emulator.mRows)
-    val sgr = isDecsetBitSet(emulator, DECSET_BIT_MOUSE_PROTOCOL_SGR)
-    val encoded =
-            encodeMouseEventBytes(
-                    mouseButton = buttonAndPressed.first,
-                    column = column,
-                    row = row,
-                    pressed = buttonAndPressed.second,
-                    useSgrProtocol = sgr
-            ) ?: return
-    sendRawInput(encoded)
-}
-
-private fun encodeMouseEventBytes(
-        mouseButton: Int,
-        column: Int,
-        row: Int,
-        pressed: Boolean,
-        useSgrProtocol: Boolean
-): ByteArray? {
-    if (useSgrProtocol) {
-        return "\u001b[<$mouseButton;$column;$row${if (pressed) 'M' else 'm'}".toByteArray()
-    }
-
-    val buttonCode = if (pressed) mouseButton else 3
-    if (column > 255 - 32 || row > 255 - 32) return null
-    return byteArrayOf(
-            27,
-            '['.code.toByte(),
-            'M'.code.toByte(),
-            (32 + buttonCode).toByte(),
-            (32 + column).toByte(),
-            (32 + row).toByte()
+                viewModel.clientBridge.onPasteRequested = {
+                    val text =
+                            clipboard?.primaryClip
+                                    ?.getItemAt(0)
+                                    ?.coerceToText(ctx)
+                                    ?.toString()
+                                    ?.take(MAX_CLIPBOARD_PASTE_CHARS)
+                    if (!text.isNullOrEmpty()) {
+                        terminalView.currentSession?.emulator?.paste(text)
+                    }
+                }
+                terminalView
+            },
+            update = { view ->
+                view.setTextSize(fontSize)
+                view.setTerminalCursorBlinkerState(true, true)
+            },
+            modifier = Modifier.fillMaxSize()
     )
 }
 
-private fun isDecsetBitSet(emulator: TerminalEmulator, bit: Int): Boolean =
-        try {
-            val field = emulator.javaClass.getDeclaredField("mCurrentDecSetFlags")
-            field.isAccessible = true
-            (field.getInt(emulator) and bit) != 0
-        } catch (_: Exception) {
-            false
-        }
+private const val MAX_CLIPBOARD_PASTE_CHARS = 1_000_000
 
-private fun buildDisplayOnlyClient(): TerminalViewClient =
+private fun buildNativeTerminalClient(
+        viewModel: SshTerminalViewModel,
+        requestKeyboard: () -> Unit,
+        postModifierReset: () -> Unit,
+        onEmulatorSet: () -> Unit,
+        isSelected: () -> Boolean
+): TerminalViewClient =
         object : TerminalViewClient {
 
-            override fun onScale(scale: Float): Float = scale
+            override fun onScale(scale: Float): Float {
+                return when {
+                    scale < 0.9f -> {
+                        viewModel.onEvent(SshTerminalContract.Event.FontSizeChanged(-1))
+                        1f
+                    }
+                    scale > 1.1f -> {
+                        viewModel.onEvent(SshTerminalContract.Event.FontSizeChanged(1))
+                        1f
+                    }
+                    else -> scale
+                }
+            }
 
-            override fun onSingleTapUp(e: MotionEvent) {}
+            override fun onSingleTapUp(e: MotionEvent) = requestKeyboard()
 
             override fun shouldBackButtonBeMappedToEscape(): Boolean = false
 
-            override fun shouldEnforceCharBasedInput(): Boolean = false
+            override fun shouldEnforceCharBasedInput(): Boolean = true
 
             override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
 
-            override fun isTerminalViewSelected(): Boolean = true
+            override fun isTerminalViewSelected(): Boolean = isSelected()
 
             override fun copyModeChanged(copyMode: Boolean) {}
 
@@ -531,15 +469,21 @@ private fun buildDisplayOnlyClient(): TerminalViewClient =
                     keyCode: Int,
                     e: KeyEvent,
                     session: TerminalSession
-            ): Boolean = false
+            ): Boolean {
+                if (viewModel.isVirtualCtrlActive() || viewModel.isVirtualAltActive()) {
+                    // The native handler reads modifiers later in this same event dispatch.
+                    postModifierReset()
+                }
+                return false
+            }
 
             override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = false
 
             override fun onLongPress(e: MotionEvent): Boolean = false
 
-            override fun readControlKey(): Boolean = false
+            override fun readControlKey(): Boolean = viewModel.isVirtualCtrlActive()
 
-            override fun readAltKey(): Boolean = false
+            override fun readAltKey(): Boolean = viewModel.isVirtualAltActive()
 
             override fun readFnKey(): Boolean = false
 
@@ -549,9 +493,12 @@ private fun buildDisplayOnlyClient(): TerminalViewClient =
                     codePoint: Int,
                     ctrlDown: Boolean,
                     session: TerminalSession
-            ): Boolean = false
+            ): Boolean {
+                viewModel.consumeVirtualModifiers()
+                return false
+            }
 
-            override fun onEmulatorSet() {}
+            override fun onEmulatorSet() = onEmulatorSet.invoke()
 
             override fun logError(tag: String?, message: String?) {}
 

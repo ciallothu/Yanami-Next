@@ -78,8 +78,10 @@ class AddServerScreen(private val editServerId: Long? = null) : Screen {
         val navigator = LocalNavigator.currentOrThrow
         val context = LocalContext.current
         val isEditMode = editServerId != null
+        val serverSavedMessage = stringResource(R.string.add_server_saved)
+        val serverUpdatedMessage = stringResource(R.string.server_updated)
 
-        LaunchedEffect(Unit) {
+        LaunchedEffect(serverSavedMessage, serverUpdatedMessage) {
             viewModel.effect.collect { effect ->
                 when (effect) {
                     is ServerContract.Effect.ShowToast -> {
@@ -88,7 +90,7 @@ class AddServerScreen(private val editServerId: Long? = null) : Screen {
                     is ServerContract.Effect.ServerSaved -> {
                         Toast.makeText(
                                         context,
-                                        context.getString(R.string.add_server_saved),
+                                        serverSavedMessage,
                                         Toast.LENGTH_SHORT
                                 )
                                 .show()
@@ -100,7 +102,7 @@ class AddServerScreen(private val editServerId: Long? = null) : Screen {
                     is ServerContract.Effect.ServerUpdated -> {
                         Toast.makeText(
                                         context,
-                                        context.getString(R.string.server_updated),
+                                        serverUpdatedMessage,
                                         Toast.LENGTH_SHORT
                                 )
                                 .show()

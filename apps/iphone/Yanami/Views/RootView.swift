@@ -3,9 +3,11 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
     @State private var unlocked = false
     @State private var authError: String?
+    @State private var isAuthenticating = false
 
     var body: some View {
         Group {
@@ -18,6 +20,20 @@ struct RootView: View {
             }
         }
         .environment(\.locale, AppLocalization.locale(for: store.settings.language))
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .inactive, .background:
+                if store.settings.biometricEnabled {
+                    unlocked = false
+                }
+            case .active:
+                if store.settings.biometricEnabled && !unlocked {
+                    authenticate()
+                }
+            @unknown default:
+                break
+            }
+        }
     }
 
     private var tabs: some View {
@@ -62,20 +78,24 @@ struct RootView: View {
     }
 
     private func authenticate() {
+        guard !isAuthenticating else { return }
+        isAuthenticating = true
         let context = LAContext()
         context.localizedFallbackTitle = ""
         context.localizedCancelTitle = AppLocalization.string("Cancel", language: store.settings.language)
         var error: NSError?
         let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
         guard context.canEvaluatePolicy(policy, error: &error) else {
+            isAuthenticating = false
             authError = AppLocalization.string("Face ID or Touch ID is unavailable.", language: store.settings.language)
             return
         }
         context.evaluatePolicy(
             policy,
-            localizedReason: AppLocalization.string("Unlock YanamiNext", language: store.settings.language)
+            localizedReason: AppLocalization.string("Unlock Yanami Next", language: store.settings.language)
         ) { success, _ in
             DispatchQueue.main.async {
+                isAuthenticating = false
                 if success {
                     authError = nil
                     unlocked = true
@@ -96,7 +116,7 @@ private struct BiometricLockView: View {
             Image(systemName: "lock.shield")
                 .font(.system(size: 44))
                 .foregroundStyle(.secondary)
-            Text("YanamiNext Locked")
+            Text("Yanami Next Locked")
                 .font(.title3.bold())
             if let message {
                 Text(message)

@@ -1,19 +1,26 @@
 import SwiftUI
 
-class AdminStore: ObservableObject {
+@MainActor
+final class AdminStore: ObservableObject {
     @Published var clients: [ManagedClient] = []
     @Published var pingTasks: [AdminPingTask] = []
     @Published var isLoading = false
     @Published var error: String?
     
     let server: ServerProfile
-    private let token: String
+    private var token: String
     private let client: KomariClient
+    private let refreshPasswordSession: @MainActor () async throws -> String
     
-    init(server: ServerProfile, token: String) {
+    init(
+        server: ServerProfile,
+        token: String,
+        refreshPasswordSession: @escaping @MainActor () async throws -> String
+    ) {
         self.server = server
         self.token = token
         self.client = KomariClient(profile: server)
+        self.refreshPasswordSession = refreshPasswordSession
     }
     
     @MainActor
@@ -21,12 +28,12 @@ class AdminStore: ObservableObject {
         isLoading = true
         error = nil
         do {
-            async let fetchClients = client.getClients(token: token)
-            async let fetchPingTasks = client.getPingTasks(token: token)
-            
-            let (fetchedClients, fetchedPingTasks) = try await (fetchClients, fetchPingTasks)
-            clients = fetchedClients
-            pingTasks = fetchedPingTasks
+            clients = try await withSessionRetry { token in
+                try await client.getClients(token: token)
+            }
+            pingTasks = try await withSessionRetry { token in
+                try await client.getPingTasks(token: token)
+            }
         } catch {
             self.error = error.localizedDescription
         }
@@ -36,7 +43,9 @@ class AdminStore: ObservableObject {
     @MainActor
     func deleteClient(uuid: String) async {
         do {
-            try await client.deleteClient(token: token, uuid: uuid)
+            try await withSessionRetry { token in
+                try await client.deleteClient(token: token, uuid: uuid)
+            }
             clients.removeAll { $0.uuid == uuid }
         } catch {
             self.error = error.localizedDescription
@@ -46,7 +55,9 @@ class AdminStore: ObservableObject {
     @MainActor
     func deletePingTask(id: Int) async {
         do {
-            try await client.deletePingTask(token: token, ids: [id])
+            try await withSessionRetry { token in
+                try await client.deletePingTask(token: token, ids: [id])
+            }
             pingTasks.removeAll { $0.id == id }
         } catch {
             self.error = error.localizedDescription
@@ -56,10 +67,30 @@ class AdminStore: ObservableObject {
     @MainActor
     func fetchClientToken(uuid: String) async -> String? {
         do {
-            return try await client.getClientToken(token: token, uuid: uuid)
+            return try await withSessionRetry { token in
+                try await client.getClientToken(token: token, uuid: uuid)
+            }
         } catch {
             self.error = error.localizedDescription
             return nil
+        }
+    }
+
+    private func withSessionRetry<T>(
+        operation: (String) async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation(token)
+        } catch {
+            guard server.authType == .password,
+                  let clientError = error as? KomariClientError,
+                  clientError.isAuthenticationFailure else {
+                throw error
+            }
+
+            let refreshedToken = try await refreshPasswordSession()
+            token = refreshedToken
+            return try await operation(refreshedToken)
         }
     }
 }
@@ -75,6 +106,9 @@ struct AdminView: View {
                 ProgressView("Loading admin data...")
             } else if let error = store.error {
                 EmptyStateView(title: "Error", systemImage: "exclamationmark.triangle", message: error)
+                Button("Retry") {
+                    Task { await store.loadData() }
+                }
             } else {
                 Section("Clients") {
                     if store.clients.isEmpty {

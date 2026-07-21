@@ -1,6 +1,6 @@
 {
-    "versionCode": 9,
-    "versionName": "1.1.0",
-    "downloadUrl": "https://github.com/icylian/Yanami/releases/latest",
-    "changelog": "新增配置备份导入导出；对接管理后台的节点管理、延迟监测管理功能；优化架构和性能。"
+    "versionCode": 10000,
+    "versionName": "0.1.0",
+    "downloadUrl": "https://github.com/ciallothu/Yanami-Next/releases/latest",
+    "changelog": "Yanami Next 首个稳定版：重构终端交互，补全节点 IP、实时流量与累计流量用量，并完成安全加固。"
 }

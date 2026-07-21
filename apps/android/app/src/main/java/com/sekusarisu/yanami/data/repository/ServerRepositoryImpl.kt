@@ -7,7 +7,6 @@ import com.sekusarisu.yanami.data.local.entity.ServerInstanceEntity
 import com.sekusarisu.yanami.data.remote.KomariAuthService
 import com.sekusarisu.yanami.data.remote.KomariRpcService
 import com.sekusarisu.yanami.data.remote.LoginResult
-import com.sekusarisu.yanami.data.remote.SessionManager
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.ServerInstance
@@ -33,8 +32,7 @@ class ServerRepositoryImpl(
         private val dao: ServerInstanceDao,
         private val cryptoManager: CryptoManager,
         private val authService: KomariAuthService,
-        private val rpcService: KomariRpcService,
-        private val sessionManager: SessionManager
+        private val rpcService: KomariRpcService
 ) : ServerRepository {
 
     companion object {
@@ -103,6 +101,7 @@ class ServerRepositoryImpl(
                 rpcService.getVersion(
                         baseUrl,
                         sessionToken,
+                        AuthType.PASSWORD,
                         customHeaders = customHeaders
                 )
         Log.d(TAG, "Test connection ok, version=$version")
@@ -142,34 +141,51 @@ class ServerRepositoryImpl(
     }
 
     override suspend fun login(instance: ServerInstance, twoFaCode: String?): Boolean {
-        // GUEST 模式：直接设置空 session，无需登录
+        // GUEST 模式无需登录。
         if (instance.authType == AuthType.GUEST) {
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    "",
-                    AuthType.GUEST,
-                    instance.customHeaders
-            )
-            Log.d(TAG, "Guest session set for server ${instance.name}")
+            Log.d(TAG, "Guest access selected for server ${instance.name}")
             return true
         }
 
-        // API_KEY 模式：直接设置 session，无需登录
+        // API_KEY 模式使用服务器快照内的 key，无需登录。
         if (instance.authType == AuthType.API_KEY) {
-            val apiKey = instance.apiKey
+            serverBoundStoredCredential(instance)
                     ?: throw Exception("API Key is missing")
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    apiKey,
-                    AuthType.API_KEY,
-                    instance.customHeaders
-            )
-            Log.d(TAG, "API Key session set for server ${instance.name}")
+            Log.d(TAG, "API Key access selected for server ${instance.name}")
             return true
         }
 
+        loginWithPassword(instance, twoFaCode)
+        return true
+    }
+
+    override suspend fun ensureSessionToken(instance: ServerInstance): String {
+        // GUEST 模式：直接返回空 token
+        if (instance.authType == AuthType.GUEST) {
+            return serverBoundStoredCredential(instance) ?: ""
+        }
+
+        // API_KEY 模式：直接使用 API Key，无需恢复/验证 session
+        if (instance.authType == AuthType.API_KEY) {
+            val apiKey = serverBoundStoredCredential(instance)
+                    ?: throw SessionExpiredException("API Key is missing")
+            return apiKey
+        }
+
+        val cachedToken = serverBoundStoredCredential(instance)
+        if (!cachedToken.isNullOrBlank() && restoreSession(instance)) {
+            // Return the credential from this immutable ServerInstance snapshot.
+            return cachedToken
+        }
+
+        // A fresh login returns its token directly; there is no process-wide credential cache.
+        return loginWithPassword(instance, twoFaCode = null)
+    }
+
+    private suspend fun loginWithPassword(
+            instance: ServerInstance,
+            twoFaCode: String?
+    ): String {
         val loginResult =
                 authService.login(
                         instance.baseUrl,
@@ -181,75 +197,19 @@ class ServerRepositoryImpl(
 
         return when (loginResult) {
             is LoginResult.Success -> {
-                // 更新内存 session
-                sessionManager.setSession(
-                        instance.id,
-                        instance.baseUrl,
-                        loginResult.sessionToken,
-                        customHeaders = instance.customHeaders
-                )
-
-                // 持久化 session_token（加密）
-                val encryptedToken = cryptoManager.encrypt(loginResult.sessionToken)
-                dao.updateSessionToken(instance.id, encryptedToken)
-
+                val token = loginResult.sessionToken
+                dao.updateSessionToken(instance.id, cryptoManager.encrypt(token))
                 Log.d(TAG, "Login successful for server ${instance.name}")
-                true
+                token
             }
-            is LoginResult.Requires2FA -> {
-                throw Requires2FAException(loginResult.message)
-            }
-            is LoginResult.Error -> {
-                throw Exception(loginResult.message)
-            }
+            is LoginResult.Requires2FA -> throw Requires2FAException(loginResult.message)
+            is LoginResult.Error -> throw SessionExpiredException(loginResult.message)
         }
-    }
-
-    override suspend fun ensureSessionToken(instance: ServerInstance): String {
-        // GUEST 模式：直接返回空 token
-        if (instance.authType == AuthType.GUEST) {
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    "",
-                    AuthType.GUEST,
-                    instance.customHeaders
-            )
-            return ""
-        }
-
-        // API_KEY 模式：直接使用 API Key，无需恢复/验证 session
-        if (instance.authType == AuthType.API_KEY) {
-            val apiKey = instance.apiKey
-                    ?: throw SessionExpiredException("API Key is missing")
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    apiKey,
-                    AuthType.API_KEY,
-                    instance.customHeaders
-            )
-            return apiKey
-        }
-
-        val restored = restoreSession(instance)
-        if (!restored) {
-            login(instance) // 成功时内部已更新 SessionManager；失败时抛出 Requires2FAException 或其他异常
-        }
-        return sessionManager.getSessionToken()
-                ?: throw SessionExpiredException()
     }
 
     override suspend fun restoreSession(instance: ServerInstance): Boolean {
-        // GUEST 模式：直接设置空 session
+        // GUEST 模式无需恢复会话。
         if (instance.authType == AuthType.GUEST) {
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    "",
-                    AuthType.GUEST,
-                    instance.customHeaders
-            )
             Log.d(TAG, "Guest session restored for server ${instance.name}")
             return true
         }
@@ -259,16 +219,8 @@ class ServerRepositoryImpl(
             val apiKey = instance.apiKey
             if (apiKey.isNullOrBlank()) {
                 Log.d(TAG, "No API Key for server ${instance.name}")
-                sessionManager.clearSession()
                 return false
             }
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    apiKey,
-                    AuthType.API_KEY,
-                    instance.customHeaders
-            )
             Log.d(TAG, "API Key session restored for server ${instance.name}")
             return true
         }
@@ -276,7 +228,6 @@ class ServerRepositoryImpl(
         val cachedToken = instance.sessionToken
         if (cachedToken.isNullOrBlank()) {
             Log.d(TAG, "No cached session_token for server ${instance.name}")
-            sessionManager.clearSession()
             return false
         }
 
@@ -288,19 +239,12 @@ class ServerRepositoryImpl(
                         instance.customHeaders
                 )
         if (isValid) {
-            sessionManager.setSession(
-                    instance.id,
-                    instance.baseUrl,
-                    cachedToken,
-                    customHeaders = instance.customHeaders
-            )
             Log.d(TAG, "Session restored for server ${instance.name}")
             return true
         }
 
         // Token 已失效，清除缓存
         Log.d(TAG, "Cached session_token expired for server ${instance.name}")
-        sessionManager.clearSession()
         dao.updateSessionToken(instance.id, null)
         return false
     }
@@ -431,5 +375,19 @@ class ServerRepositoryImpl(
         } catch (e: Exception) {
             null
         }
+    }
+}
+
+/**
+ * Resolves only credentials carried by the supplied immutable server snapshot.
+ *
+ * This has no global credential dependency, making concurrent resolution for different servers
+ * deterministic and testable.
+ */
+internal fun serverBoundStoredCredential(instance: ServerInstance): String? {
+    return when (instance.authType) {
+        AuthType.GUEST -> ""
+        AuthType.API_KEY -> instance.apiKey?.takeIf { it.isNotBlank() }
+        AuthType.PASSWORD -> instance.sessionToken?.takeIf { it.isNotBlank() }
     }
 }

@@ -1,6 +1,8 @@
 package com.sekusarisu.yanami.domain.repository
 
 import com.sekusarisu.yanami.data.remote.dto.NodeStatusDto
+import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.LoadRecord
 import com.sekusarisu.yanami.domain.model.Node
 import com.sekusarisu.yanami.domain.model.PingRecord
@@ -19,7 +21,12 @@ interface NodeRepository {
          *
          * 内部调用 common:getNodes 获取静态节点信息。
          */
-        suspend fun getNodeInfos(baseUrl: String, sessionToken: String): List<Node>
+        suspend fun getNodeInfos(
+                baseUrl: String,
+                sessionToken: String,
+                authType: AuthType,
+                customHeaders: List<CustomHeader>
+        ): List<Node>
 
         /**
          * 获取节点最近 1 分钟未降采样状态数据（HTTP POST）
@@ -29,7 +36,9 @@ interface NodeRepository {
         suspend fun getNodeRecentStatus(
                 baseUrl: String,
                 sessionToken: String,
-                uuid: String
+                uuid: String,
+                authType: AuthType,
+                customHeaders: List<CustomHeader>
         ): List<LoadRecord>
 
         /**
@@ -40,7 +49,9 @@ interface NodeRepository {
         fun observeNodeStatus(
                 baseUrl: String,
                 sessionToken: String,
-                baseNodes: List<Node>
+                baseNodes: List<Node>,
+                authType: AuthType,
+                customHeaders: List<CustomHeader>
         ): Flow<List<Node>>
 
         sealed interface NodeDetailWsEvent {
@@ -56,6 +67,8 @@ interface NodeRepository {
                 sessionToken: String,
                 uuid: String,
                 loadHours: Int?,
-                pingHours: Int
+                pingHours: Int,
+                authType: AuthType,
+                customHeaders: List<CustomHeader>
         ): Flow<NodeDetailWsEvent>
 }
