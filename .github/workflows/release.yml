@@ -157,6 +157,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Ensure Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Build unsigned iPhone app
         env:
           VERSION: ${{ needs.validate.outputs.version }}

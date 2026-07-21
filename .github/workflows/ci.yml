@@ -93,6 +93,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Ensure Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
       - name: Build unsigned iPhone app
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
