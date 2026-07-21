@@ -57,6 +57,10 @@ jobs:
         with:
           languages: java-kotlin,c-cpp
           build-mode: manual
+          # CodeQL enables C/C++ TRAP caching on the default branch. Android
+          # NDK builds do not currently produce the cache's tarballs directory,
+          # which makes database finalization fail after a successful build.
+          trap-caching: false
       - name: Build Android app
         working-directory: apps/android
         run: ./gradlew --no-daemon assembleDebug
