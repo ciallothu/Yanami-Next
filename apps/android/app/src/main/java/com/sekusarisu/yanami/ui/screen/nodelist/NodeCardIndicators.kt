@@ -40,6 +40,7 @@ import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.TrafficLimitUsage
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitPercent
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitTypeLabel
+import java.util.Locale
 
 @Composable
 internal fun CircularUsageIndicator(
@@ -94,7 +95,12 @@ internal fun CircularUsageIndicator(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                        text = String.format("%.0f%%", percent.coerceIn(0.0, 100.0)),
+                        text =
+                                String.format(
+                                        Locale.getDefault(),
+                                        "%.0f%%",
+                                        percent.coerceIn(0.0, 100.0)
+                                ),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface
@@ -178,11 +184,11 @@ fun formatBytes(bytes: Long): String {
         unitIndex++
     }
     return if (value >= 100 || unitIndex == 0) {
-        String.format("%.0f %s", value, units[unitIndex])
+        String.format(Locale.getDefault(), "%.0f %s", value, units[unitIndex])
     } else if (value >= 10) {
-        String.format("%.1f %s", value, units[unitIndex])
+        String.format(Locale.getDefault(), "%.1f %s", value, units[unitIndex])
     } else {
-        String.format("%.2f %s", value, units[unitIndex])
+        String.format(Locale.getDefault(), "%.2f %s", value, units[unitIndex])
     }
 }
 
@@ -196,11 +202,11 @@ fun formatSpeed(bytesPerSec: Long): String {
         unitIndex++
     }
     return if (value >= 100) {
-        String.format("%.0f %s", value, units[unitIndex])
+        String.format(Locale.getDefault(), "%.0f %s", value, units[unitIndex])
     } else if (value >= 10) {
-        String.format("%.1f %s", value, units[unitIndex])
+        String.format(Locale.getDefault(), "%.1f %s", value, units[unitIndex])
     } else {
-        String.format("%.2f %s", value, units[unitIndex])
+        String.format(Locale.getDefault(), "%.2f %s", value, units[unitIndex])
     }
 }
 

@@ -95,6 +95,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test iPhone metric and privacy policies
+        run: |
+          xcrun swiftc -parse-as-library \
+            apps/iphone/Yanami/Utilities/NodeMetricsPolicy.swift \
+            apps/iphone/Tests/NodeMetricsPolicyTests.swift \
+            -o "$RUNNER_TEMP/node-metrics-policy-tests"
+          "$RUNNER_TEMP/node-metrics-policy-tests"
+
+          xcrun swiftc -parse-as-library \
+            apps/iphone/Yanami/Utilities/SecurityLifecyclePolicy.swift \
+            apps/iphone/Tests/SecurityLifecyclePolicyTests.swift \
+            -o "$RUNNER_TEMP/security-lifecycle-policy-tests"
+          "$RUNNER_TEMP/security-lifecycle-policy-tests"
+
       - name: Build unsigned iPhone app
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"

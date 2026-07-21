@@ -7,6 +7,7 @@ import com.sekusarisu.yanami.domain.model.ServerInstance
 import com.sekusarisu.yanami.domain.repository.Requires2FAException
 import com.sekusarisu.yanami.domain.repository.ServerRepository
 import com.sekusarisu.yanami.mvi.MviViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 /** 失效会话重登录 ViewModel */
@@ -103,20 +104,16 @@ class ServerReLoginViewModel(
 
         setState { copy(isSubmitting = true, error = null) }
         screenModelScope.launch {
+            val loginTarget =
+                    currentServer.copy(
+                            username = username,
+                            password = password,
+                            requires2fa = state.requires2fa
+                    )
             try {
-                val loginTarget =
-                        currentServer.copy(
-                                username = username,
-                                password = password,
-                                requires2fa = state.requires2fa
-                        )
+                // login() validates the stored origin before the request and atomically persists
+                // the successful username/password/token tuple afterwards.
                 repository.login(loginTarget, twoFaCode)
-                repository.updateAuthInfo(
-                        id = currentServer.id,
-                        username = username,
-                        password = password,
-                        requires2fa = state.requires2fa
-                )
 
                 setState { copy(isSubmitting = false, twoFaCode = "") }
                 sendEffect(
@@ -126,7 +123,15 @@ class ServerReLoginViewModel(
                 )
                 sendEffect(ServerReLoginContract.Effect.NavigateToNodeList)
             } catch (e: Requires2FAException) {
-                repository.updateRequires2fa(currentServer.id, true)
+                try {
+                    repository.updateRequires2fa(loginTarget, true)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // The user may have changed credentials or another editor may have replaced
+                    // this profile. Keep the prompt local; the next successful guarded login will
+                    // persist the capability on the matching identity.
+                }
                 setState {
                     copy(
                             isSubmitting = false,

@@ -3,17 +3,21 @@ package com.sekusarisu.yanami.ui.screen.nodelist
 import android.content.Context
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
+import com.sekusarisu.yanami.data.repository.reconcileRefreshedNodes
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.Node
 import com.sekusarisu.yanami.domain.model.ServerInstance
+import com.sekusarisu.yanami.domain.model.aggregateNodeMetrics
 import com.sekusarisu.yanami.domain.repository.NodeRepository
 import com.sekusarisu.yanami.domain.repository.Requires2FAException
 import com.sekusarisu.yanami.domain.repository.ServerRepository
 import com.sekusarisu.yanami.domain.repository.SessionExpiredException
 import com.sekusarisu.yanami.mvi.MviViewModel
 import com.sekusarisu.yanami.ui.screen.isSessionAuthError
+import com.sekusarisu.yanami.ui.screen.isCurrentRequestGeneration
 import com.sekusarisu.yanami.ui.screen.isTwoFaHint
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.launchIn
@@ -32,6 +36,8 @@ class NodeListViewModel(
 
     private var wsJob: Job? = null
     private var resumeStreamingJob: Job? = null
+    private var fetchJob: Job? = null
+    private var fetchGeneration = 0L
     private var isScreenStarted = false
     private var latestStreamRequest: NodeStatusStreamRequest? = null
 
@@ -87,11 +93,24 @@ class NodeListViewModel(
     }
 
     private fun fetchNodes(mode: NodeLoadMode) {
-        updateLoadingState(mode, isLoading = true)
-        if (mode == NodeLoadMode.REFRESH) {
-            wsJob?.cancel()
+        val generation = ++fetchGeneration
+        fetchJob?.cancel()
+        resumeStreamingJob?.cancel()
+        resumeStreamingJob = null
+        wsJob?.cancel()
+        wsJob = null
+        if (mode == NodeLoadMode.INITIAL) {
+            latestStreamRequest = null
+        } else {
+            latestStreamRequest =
+                    latestStreamRequest?.copy(
+                            baseNodes = currentState.nodes,
+                            generation = generation
+                    )
         }
-        screenModelScope.launch {
+        updateLoadingState(mode, isLoading = true)
+        val previousNodes = currentState.nodes
+        fetchJob = screenModelScope.launch {
             var activeServerId: Long? = null
             var activeRequires2fa = false
             var activeAuthType = AuthType.PASSWORD
@@ -104,16 +123,27 @@ class NodeListViewModel(
                 activeServerId = server.id
                 activeRequires2fa = server.requires2fa
                 activeAuthType = server.authType
-                setState { copy(serverName = server.name) }
+                if (!isCurrentFetch(generation)) return@launch
                 val sessionToken = ensureSession(server)
+                if (!isCurrentFetchForServer(generation, server.id)) {
+                    loadNodes()
+                    return@launch
+                }
 
-                val nodes =
+                val refreshedNodes =
                         nodeRepository.getNodeInfos(
                                 baseUrl = server.baseUrl,
                                 sessionToken = sessionToken,
                                 authType = server.authType,
-                                customHeaders = server.customHeaders.toList()
+                                customHeaders = server.customHeaders.toList(),
+                                previousNodes = previousNodes
                         )
+                if (!isCurrentFetchForServer(generation, server.id)) {
+                    loadNodes()
+                    return@launch
+                }
+                val nodes = reconcileRefreshedNodes(currentState.nodes, refreshedNodes)
+                setState { copy(serverName = server.name) }
                 updateNodesState(nodes)
                 updateLoadingState(mode, isLoading = false)
 
@@ -122,7 +152,8 @@ class NodeListViewModel(
                                 baseNodes = nodes,
                                 serverId = server.id,
                                 requires2fa = server.requires2fa,
-                                authType = server.authType
+                                authType = server.authType,
+                                generation = generation
                         )
                 if (isScreenStarted) {
                     startWebSocketStatusFlow(
@@ -132,10 +163,18 @@ class NodeListViewModel(
                             server.id,
                             server.requires2fa,
                             server.authType,
-                            server.customHeaders.toList()
+                            server.customHeaders.toList(),
+                            generation
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                if (!isCurrentFetch(generation)) return@launch
+                if (activeServerId != null && serverRepository.getActive()?.id != activeServerId) {
+                    loadNodes()
+                    return@launch
+                }
                 if (activeServerId != null &&
                                 handleSessionExpired(
                                         activeServerId,
@@ -147,19 +186,31 @@ class NodeListViewModel(
                     return@launch
                 }
                 handleFetchNodesError(mode, e)
+                if (mode == NodeLoadMode.REFRESH) resumeStreamingIfNeeded()
+            } finally {
+                if (isCurrentFetch(generation)) fetchJob = null
             }
         }
     }
 
+    private fun isCurrentFetch(generation: Long): Boolean =
+            isCurrentRequestGeneration(generation, fetchGeneration)
+
+    private suspend fun isCurrentFetchForServer(generation: Long, serverId: Long): Boolean =
+            isCurrentFetch(generation) && serverRepository.getActive()?.id == serverId
+
     private fun updateLoadingState(mode: NodeLoadMode, isLoading: Boolean) {
         when (mode) {
-            NodeLoadMode.INITIAL -> setState { copy(isLoading = isLoading, error = null) }
+            NodeLoadMode.INITIAL ->
+                    setState {
+                        copy(isLoading = isLoading, isRefreshing = false, error = null)
+                    }
             NodeLoadMode.REFRESH ->
                     setState {
                         if (isLoading) {
-                            copy(isRefreshing = true)
+                            copy(isLoading = false, isRefreshing = true)
                         } else {
-                            copy(isRefreshing = false, error = null)
+                            copy(isLoading = false, isRefreshing = false, error = null)
                         }
                     }
         }
@@ -171,6 +222,7 @@ class NodeListViewModel(
                 setState {
                     copy(
                             isLoading = false,
+                            isRefreshing = false,
                             error = context.getString(R.string.node_load_failed, error.message)
                     )
                 }
@@ -190,7 +242,7 @@ class NodeListViewModel(
         return try {
             serverRepository.ensureSessionToken(server)
         } catch (e: Requires2FAException) {
-            serverRepository.updateRequires2fa(server.id, true)
+            serverRepository.updateRequires2fa(server, true)
             throw SessionExpiredException(e.message ?: context.getString(R.string.error_no_session))
         } catch (e: Exception) {
             if (e.isSessionAuthError()) {
@@ -227,7 +279,9 @@ class NodeListViewModel(
 
     private fun resumeStreamingIfNeeded() {
         val streamRequest = latestStreamRequest ?: return
-        if (!isScreenStarted || currentState.isLoading || wsJob != null) return
+        if (!isScreenStarted || currentState.isLoading || currentState.isRefreshing || wsJob != null) {
+            return
+        }
 
         resumeStreamingJob?.cancel()
         resumeStreamingJob =
@@ -243,6 +297,13 @@ class NodeListViewModel(
                         currentRequires2fa = activeServer.requires2fa
                         currentAuthType = activeServer.authType
                         val sessionToken = ensureSession(activeServer)
+                        if (!isCurrentFetchForServer(
+                                        streamRequest.generation,
+                                        activeServer.id
+                                )
+                        ) {
+                            return@launch
+                        }
                         startWebSocketStatusFlow(
                                 baseUrl = activeServer.baseUrl,
                                 sessionToken = sessionToken,
@@ -252,9 +313,13 @@ class NodeListViewModel(
                                 serverId = streamRequest.serverId,
                                 requires2fa = activeServer.requires2fa,
                                 authType = activeServer.authType,
-                                customHeaders = activeServer.customHeaders.toList()
+                                customHeaders = activeServer.customHeaders.toList(),
+                                generation = streamRequest.generation
                         )
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
+                        if (!isCurrentFetch(streamRequest.generation)) return@launch
                         if (!handleSessionExpired(
                                         streamRequest.serverId,
                                         currentRequires2fa,
@@ -264,7 +329,7 @@ class NodeListViewModel(
                         ) {
                             android.util.Log.w(
                                     "NodeListVM",
-                                    "Failed to resume status flow: ${e.message}"
+                                    "Failed to resume status flow (${e::class.java.simpleName})"
                             )
                         }
                     }
@@ -279,8 +344,10 @@ class NodeListViewModel(
             serverId: Long,
             requires2fa: Boolean,
             authType: AuthType,
-            customHeaders: List<CustomHeader>
+            customHeaders: List<CustomHeader>,
+            generation: Long
     ) {
+        if (!isCurrentFetch(generation)) return
         wsJob?.cancel()
         wsJob =
                 nodeRepository
@@ -291,10 +358,24 @@ class NodeListViewModel(
                                 authType = authType,
                                 customHeaders = customHeaders.toList()
                         )
-                        .onEach { updatedNodes -> updateNodesState(updatedNodes) }
+                        .onEach { updatedNodes ->
+                            if (!isCurrentFetch(generation)) return@onEach
+                            if (serverRepository.getActive()?.id != serverId) {
+                                wsJob?.cancel()
+                                return@onEach
+                            }
+                            updateNodesState(
+                                    reconcileRefreshedNodes(currentState.nodes, updatedNodes)
+                            )
+                        }
                         .catch { e ->
+                            if (!isCurrentFetch(generation)) return@catch
+                            if (serverRepository.getActive()?.id != serverId) return@catch
                             if (!handleSessionExpired(serverId, requires2fa, e, authType)) {
-                                android.util.Log.w("NodeListVM", "Status flow error: ${e.message}")
+                                android.util.Log.w(
+                                        "NodeListVM",
+                                        "Status flow failed (${e::class.java.simpleName})"
+                                )
                             }
                         }
                         .launchIn(screenModelScope)
@@ -303,23 +384,21 @@ class NodeListViewModel(
     /** 更新节点数据并重新计算统计和过滤 */
     private fun updateNodesState(nodes: List<Node>) {
         val groups = nodes.map { it.group }.filter { it.isNotBlank() }.distinct().sorted()
-        val onlineNodes = nodes.filter { it.isOnline }
-        val onlineCount = onlineNodes.size
-        val offlineCount = nodes.size - onlineCount
+        val metrics = aggregateNodeMetrics(nodes)
 
         setState {
             copy(
                     nodes = nodes,
                     groups = groups,
-                    onlineCount = onlineCount,
-                    offlineCount = offlineCount,
+                    onlineCount = metrics.onlineCount,
+                    offlineCount = metrics.offlineCount,
                     totalCount = nodes.size,
-                    totalNetIn = onlineNodes.sumOf { it.netIn },
-                    totalNetOut = onlineNodes.sumOf { it.netOut },
-                    totalTrafficUp = onlineNodes.sumOf { it.netTotalUp },
-                    totalTrafficDown = onlineNodes.sumOf { it.netTotalDown },
-                    currentTrafficUp = onlineNodes.sumOf { it.trafficUp },
-                    currentTrafficDown = onlineNodes.sumOf { it.trafficDown }
+                    totalNetIn = metrics.netIn,
+                    totalNetOut = metrics.netOut,
+                    totalTrafficUp = metrics.trafficUsageUp,
+                    totalTrafficDown = metrics.trafficUsageDown,
+                    currentTrafficUp = metrics.currentTrafficUp,
+                    currentTrafficDown = metrics.currentTrafficDown
             )
         }
     }
@@ -333,6 +412,7 @@ class NodeListViewModel(
             val baseNodes: List<Node>,
             val serverId: Long,
             val requires2fa: Boolean,
-            val authType: AuthType
+            val authType: AuthType,
+            val generation: Long
     )
 }

@@ -204,7 +204,9 @@ class KomariRpcService(private val httpClient: HttpClient) {
                     Log.d(TAG, "WebSocket connected successfully")
 
                     var isFirstPoll = true
-                    while (isActive && !isClosedForSend) {
+                    // A closed socket makes the next send fail and is handled by the lifecycle
+                    // wrapper. Avoid Ktor's delicate isClosedForSend API, whose state can race.
+                    while (isActive) {
                         var expectedCount = 0
                         val reqStatusId = requestId++
                         expectedCount++
@@ -298,7 +300,7 @@ class KomariRpcService(private val httpClient: HttpClient) {
                                         receivedCount++
                                     }
                                 } catch (e: Exception) {
-                                    Log.w(TAG, "Parse error: ${e.message}")
+                                    Log.w(TAG, "RPC response parse failed (${e::class.java.simpleName})")
                                 }
                             }
                         }

@@ -28,6 +28,36 @@ class NodeTrafficTest {
         assertNull(sampleNode(trafficLimit = 0).calculateTrafficLimitUsage())
     }
 
+    @Test fun trafficLimitModesClampNegativeCountersAndSaturateSum() {
+        assertEquals(
+                Long.MAX_VALUE,
+                sampleNode(
+                                netTotalUp = Long.MAX_VALUE,
+                                netTotalDown = 1,
+                                trafficLimit = 1,
+                                trafficLimitType = "sum"
+                        )
+                        .calculateTrafficLimitUsage()!!
+                        .currentUsage
+        )
+        assertEquals(
+                9L,
+                sampleNode(-5, 9, 1, "max").calculateTrafficLimitUsage()!!.currentUsage
+        )
+        assertEquals(
+                0L,
+                sampleNode(-5, 9, 1, "min").calculateTrafficLimitUsage()!!.currentUsage
+        )
+        assertEquals(
+                0L,
+                sampleNode(-5, 9, 1, "up").calculateTrafficLimitUsage()!!.currentUsage
+        )
+        assertEquals(
+                0L,
+                sampleNode(9, -5, 1, "down").calculateTrafficLimitUsage()!!.currentUsage
+        )
+    }
+
     private fun sampleNode(
             netTotalUp: Long = 0,
             netTotalDown: Long = 0,

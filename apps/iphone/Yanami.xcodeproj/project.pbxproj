@@ -27,6 +27,8 @@
 		1A0000000000000000000112 /* SshTerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000212 /* SshTerminalViewModel.swift */; };
 		1A0000000000000000000113 /* RemoteTerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000213 /* RemoteTerminalView.swift */; };
 		1A0000000000000000000114 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000214 /* THIRD_PARTY_NOTICES.md */; };
+		1A0000000000000000000115 /* NodeMetricsPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000215 /* NodeMetricsPolicy.swift */; };
+		1A0000000000000000000116 /* SecurityLifecyclePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000000000000000000216 /* SecurityLifecyclePolicy.swift */; };
 		5AF6B639E800F23E05E7652B /* AdminView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C9B360DAFAD299B28943F6A /* AdminView.swift */; };
 		B10000000000000000000003 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000002 /* SwiftTerm */; };
 /* End PBXBuildFile section */
@@ -52,6 +54,8 @@
 		1A0000000000000000000212 /* SshTerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SshTerminalViewModel.swift; sourceTree = "<group>"; };
 		1A0000000000000000000213 /* RemoteTerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTerminalView.swift; sourceTree = "<group>"; };
 		1A0000000000000000000214 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
+		1A0000000000000000000215 /* NodeMetricsPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodeMetricsPolicy.swift; sourceTree = "<group>"; };
+		1A0000000000000000000216 /* SecurityLifecyclePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecurityLifecyclePolicy.swift; sourceTree = "<group>"; };
 		1A0000000000000000000410 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
 		1A0000000000000000000411 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		1A0000000000000000000412 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
@@ -156,6 +160,8 @@
 			children = (
 				1A000000000000000000020E /* Formatters.swift */,
 				1A0000000000000000000211 /* Localization.swift */,
+				1A0000000000000000000215 /* NodeMetricsPolicy.swift */,
+				1A0000000000000000000216 /* SecurityLifecyclePolicy.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -279,6 +285,8 @@
 				1A0000000000000000000111 /* Localization.swift in Sources */,
 				1A0000000000000000000112 /* SshTerminalViewModel.swift in Sources */,
 				1A0000000000000000000113 /* RemoteTerminalView.swift in Sources */,
+				1A0000000000000000000115 /* NodeMetricsPolicy.swift in Sources */,
+				1A0000000000000000000116 /* SecurityLifecyclePolicy.swift in Sources */,
 				5AF6B639E800F23E05E7652B /* AdminView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

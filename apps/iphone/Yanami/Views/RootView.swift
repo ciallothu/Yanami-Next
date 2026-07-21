@@ -1,38 +1,94 @@
 import LocalAuthentication
 import SwiftUI
+import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = 0
-    @State private var unlocked = false
     @State private var authError: String?
     @State private var isAuthenticating = false
+    @State private var authenticationGeneration: UInt64 = 0
+    @State private var authenticationContext: LAContext?
+    @State private var isPrivacyCoverVisible = false
+    @StateObject private var privacyShieldWindow = PrivacyShieldWindowController()
 
     var body: some View {
-        Group {
-            if store.settings.biometricEnabled && !unlocked {
-                BiometricLockView(message: authError) {
-                    authenticate()
+        ZStack {
+            Group {
+                if !store.isCredentialAccessUnlocked {
+                    BiometricLockView(message: authError ?? store.credentialAccessError) {
+                        authenticate()
+                    }
+                } else {
+                    tabs
                 }
-            } else {
-                tabs
+            }
+            if isPrivacyCoverVisible {
+                PrivacyShieldView()
+                    .transition(.identity)
             }
         }
         .environment(\.locale, AppLocalization.locale(for: store.settings.language))
+        .sheet(
+            item: Binding(
+                get: { store.twoFactorPrompt },
+                set: { prompt in
+                    if prompt == nil {
+                        store.cancelTwoFactorPrompt()
+                    }
+                }
+            )
+        ) { prompt in
+            TwoFactorCodePromptView(prompt: prompt)
+                .environmentObject(store)
+        }
         .onChange(of: scenePhase) { phase in
             switch phase {
-            case .inactive, .background:
-                if store.settings.biometricEnabled {
-                    unlocked = false
+            case .inactive:
+                isPrivacyCoverVisible = true
+                privacyShieldWindow.show()
+                if shouldLockCredentialsForSceneTransition(
+                    .inactive,
+                    lockEnabled: store.settings.biometricEnabled,
+                    rootAuthenticationInProgress: isAuthenticating,
+                    lockMutationAuthorizationInProgress:
+                        store.isBiometricLockAuthorizationInProgress
+                ) {
+                    store.lockCredentialAccess()
+                }
+            case .background:
+                isPrivacyCoverVisible = true
+                privacyShieldWindow.show()
+                authenticationGeneration &+= 1
+                authenticationContext?.invalidate()
+                authenticationContext = nil
+                isAuthenticating = false
+                authError = nil
+                if shouldCancelBiometricLockAuthorization(for: .background) {
+                    store.cancelBiometricLockAuthorization()
+                }
+                if shouldLockCredentialsForSceneTransition(
+                    .background,
+                    lockEnabled: store.settings.biometricEnabled,
+                    rootAuthenticationInProgress: isAuthenticating,
+                    lockMutationAuthorizationInProgress:
+                        store.isBiometricLockAuthorizationInProgress
+                ) {
+                    store.lockCredentialAccess()
                 }
             case .active:
-                if store.settings.biometricEnabled && !unlocked {
+                isPrivacyCoverVisible = false
+                privacyShieldWindow.hide()
+                if !store.isCredentialAccessUnlocked && !isAuthenticating {
                     authenticate()
                 }
             @unknown default:
                 break
             }
+        }
+        .onDisappear {
+            privacyShieldWindow.hide()
         }
     }
 
@@ -73,19 +129,25 @@ struct RootView: View {
             }
         }
         .onChange(of: store.settings.biometricEnabled) { enabled in
-            unlocked = !enabled
+            if enabled {
+                store.lockCredentialAccess()
+            }
         }
     }
 
     private func authenticate() {
-        guard !isAuthenticating else { return }
+        guard scenePhase == .active, !isAuthenticating else { return }
+        authenticationGeneration &+= 1
+        let attemptGeneration = authenticationGeneration
         isAuthenticating = true
         let context = LAContext()
+        authenticationContext = context
         context.localizedFallbackTitle = ""
         context.localizedCancelTitle = AppLocalization.string("Cancel", language: store.settings.language)
         var error: NSError?
         let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
         guard context.canEvaluatePolicy(policy, error: &error) else {
+            authenticationContext = nil
             isAuthenticating = false
             authError = AppLocalization.string("Face ID or Touch ID is unavailable.", language: store.settings.language)
             return
@@ -95,12 +157,124 @@ struct RootView: View {
             localizedReason: AppLocalization.string("Unlock Yanami Next", language: store.settings.language)
         ) { success, _ in
             DispatchQueue.main.async {
+                guard attemptGeneration == authenticationGeneration else {
+                    context.invalidate()
+                    return
+                }
+                authenticationContext = nil
                 isAuthenticating = false
-                if success {
-                    authError = nil
-                    unlocked = true
-                } else {
+                if canApplyLocalAuthenticationSuccess(
+                    attemptGeneration: attemptGeneration,
+                    currentGeneration: authenticationGeneration,
+                    sceneIsActive: scenePhase == .active,
+                    succeeded: success
+                ) {
+                    if store.unlockCredentialAccess(using: context) {
+                        authError = nil
+                    } else {
+                        authError = store.credentialAccessError
+                    }
+                } else if scenePhase == .active {
                     authError = AppLocalization.string("Biometric authentication failed.", language: store.settings.language)
+                }
+                // ProfileStore has synchronously read and cached only the random AES key. Do
+                // not retain a reusable LocalAuthentication credential after this attempt.
+                context.invalidate()
+            }
+        }
+    }
+}
+
+private struct PrivacyShieldView: View {
+    var body: some View {
+        Color(.systemBackground)
+            .ignoresSafeArea()
+            .overlay {
+                Image(systemName: "lock.shield")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+    }
+}
+
+/// A root ZStack cannot cover SwiftUI presentation windows. This separate alert-level window is
+/// attached to the current foreground UIWindowScene, so sheets and nested presentations are also
+/// excluded from inactive/app-switcher snapshots. System LocalAuthentication UI is presented by
+/// iOS above application windows and remains usable.
+@MainActor
+private final class PrivacyShieldWindowController: ObservableObject {
+    private var window: UIWindow?
+
+    func show() {
+        if let window {
+            window.isHidden = false
+            return
+        }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        guard let scene = scenes.first(where: {
+            $0.activationState == .foregroundActive ||
+                $0.activationState == .foregroundInactive
+        }) ?? scenes.first else {
+            return
+        }
+
+        let controller = UIHostingController(rootView: PrivacyShieldView())
+        controller.view.backgroundColor = .systemBackground
+        let shieldWindow = UIWindow(windowScene: scene)
+        shieldWindow.rootViewController = controller
+        shieldWindow.windowLevel = .alert + 1
+        shieldWindow.isUserInteractionEnabled = false
+        shieldWindow.isHidden = false
+        window = shieldWindow
+    }
+
+    func hide() {
+        window?.isHidden = true
+        window?.rootViewController = nil
+        window = nil
+    }
+}
+
+private struct TwoFactorCodePromptView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    let prompt: TwoFactorPrompt
+    @State private var code = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Enter the current authentication code for \(prompt.serverName).")
+                    SecureField("Two-factor authentication code", text: $code)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                }
+                if let message = prompt.message {
+                    Section {
+                        Text(message)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("Two-Factor Authentication")
+            .interactiveDismissDisabled()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        store.cancelTwoFactorPrompt(id: prompt.id)
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Continue") {
+                        if store.submitTwoFactorCode(code, promptID: prompt.id) {
+                            code = ""
+                            dismiss()
+                        }
+                    }
+                    .disabled(code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }

@@ -75,7 +75,7 @@ private fun SshTerminalScreenPreview() {
                                             style = MaterialTheme.typography.titleMedium
                                     )
                                     Text(
-                                            text = "已连接",
+                                            text = stringResource(R.string.terminal_status_connected),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

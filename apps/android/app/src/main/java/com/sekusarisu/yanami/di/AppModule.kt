@@ -1,12 +1,12 @@
 package com.sekusarisu.yanami.di
 
 import androidx.room.Room
-import com.sekusarisu.yanami.BuildConfig
 import com.sekusarisu.yanami.data.backup.ConfigBackupManager
 import com.sekusarisu.yanami.data.local.MIGRATION_2_3
 import com.sekusarisu.yanami.data.local.MIGRATION_3_4
 import com.sekusarisu.yanami.data.local.YanamiDatabase
 import com.sekusarisu.yanami.data.local.crypto.CryptoManager
+import com.sekusarisu.yanami.data.local.crypto.BiometricLockManager
 import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
 import com.sekusarisu.yanami.data.remote.KomariAdminClientService
 import com.sekusarisu.yanami.data.remote.KomariAdminPingService
@@ -40,7 +40,6 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.websocket.WebSockets
-import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import org.koin.android.ext.koin.androidContext
@@ -73,9 +72,10 @@ val appModule = module {
                 socketTimeoutMillis = 15_000
             }
             install(Logging) {
-                // Distributable debug builds must never expose credentials or response payloads.
-                level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
-                sanitizeHeader { header -> isSensitiveHeader(header) }
+                // Custom headers are user-defined and may contain arbitrary credentials. A
+                // finite sanitizer can never classify all of them, so distributable clients do
+                // not enable Ktor request/response logging in any build type.
+                level = DISTRIBUTABLE_HTTP_LOG_LEVEL
             }
         }
     }
@@ -91,6 +91,7 @@ val appModule = module {
 
     // ─── Crypto ───
     single { CryptoManager() }
+    single { BiometricLockManager() }
 
     // ─── Preferences ───
     single { UserPreferencesRepository(androidContext()) }
@@ -127,18 +128,10 @@ val appModule = module {
     factory { PingTaskManagementViewModel(get(), get(), get(), androidContext()) }
     factory { ClientCreateViewModel(get(), get(), androidContext()) }
     factory { (uuid: String) -> ClientEditViewModel(uuid, get(), get(), androidContext()) }
-    factory { SettingsViewModel(get(), get(), androidContext()) }
+    factory { SettingsViewModel(get(), get(), get(), androidContext()) }
     factory { AboutViewModel(get(), androidContext()) }
     factory { (uuid: String) -> NodeDetailViewModel(uuid, get(), get(), androidContext()) }
     factory { (uuid: String) -> SshTerminalViewModel(uuid, get(), get(), get()) }
 }
 
-private fun isSensitiveHeader(name: String): Boolean {
-    val normalized = name.lowercase()
-    return name.equals(HttpHeaders.Authorization, ignoreCase = true) ||
-            name.equals(HttpHeaders.ProxyAuthorization, ignoreCase = true) ||
-            name.equals(HttpHeaders.Cookie, ignoreCase = true) ||
-            name.equals(HttpHeaders.SetCookie, ignoreCase = true) ||
-            listOf("auth", "cookie", "token", "secret", "api-key", "api_key", "apikey")
-                    .any(normalized::contains)
-}
+internal val DISTRIBUTABLE_HTTP_LOG_LEVEL: LogLevel = LogLevel.NONE

@@ -5,6 +5,8 @@ struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var draft = AppSettings()
     @State private var biometricError: String?
+    @State private var biometricAuthenticationContext: LAContext?
+    @State private var biometricAuthorizationLease: BiometricLockAuthorizationLease?
 
     var body: some View {
         NavigationStack {
@@ -17,12 +19,19 @@ struct SettingsView: View {
                     Toggle("Biometric lock", isOn: Binding(
                         get: { draft.biometricEnabled },
                         set: { enabled in
-                            if enabled {
-                                authenticateBiometric {
-                                    draft.biometricEnabled = true
+                            guard enabled != draft.biometricEnabled else { return }
+                            authenticateBiometric(enabling: enabled) { context in
+                                var updated = draft
+                                updated.biometricEnabled = enabled
+                                if store.updateSettings(
+                                    updated,
+                                    authorizationContext: context
+                                ) {
+                                    biometricError = nil
+                                } else {
+                                    biometricError = store.statusMessage
                                 }
-                            } else {
-                                draft.biometricEnabled = false
+                                draft = store.settings
                             }
                         }
                     ))
@@ -84,33 +93,75 @@ struct SettingsView: View {
                 draft = store.settings
             }
             .onChange(of: draft) { newValue in
-                store.updateSettings(newValue)
+                // Lock transitions are committed only by the authenticated toggle callback.
+                guard newValue.biometricEnabled == store.settings.biometricEnabled else { return }
+                if !store.updateSettings(newValue), draft != store.settings {
+                    draft = store.settings
+                }
+            }
+            .onDisappear {
+                biometricAuthenticationContext?.invalidate()
+                biometricAuthenticationContext = nil
+                if biometricAuthorizationLease != nil {
+                    store.cancelBiometricLockAuthorization()
+                    biometricAuthorizationLease = nil
+                }
             }
         }
     }
 
-    private func authenticateBiometric(onSuccess: @escaping () -> Void) {
+    private func authenticateBiometric(
+        enabling: Bool,
+        onSuccess: @escaping (LAContext) -> Void
+    ) {
+        guard let lease = store.beginBiometricLockAuthorization() else { return }
         let context = LAContext()
+        biometricAuthorizationLease = lease
+        biometricAuthenticationContext = context
         context.localizedFallbackTitle = ""
         context.localizedCancelTitle = AppLocalization.string("Cancel", language: draft.language)
         var error: NSError?
         let policy = LAPolicy.deviceOwnerAuthenticationWithBiometrics
         guard context.canEvaluatePolicy(policy, error: &error) else {
+            finishBiometricAuthorization(lease: lease, context: context)
             biometricError = AppLocalization.string("Face ID or Touch ID is unavailable.", language: draft.language)
             return
         }
         context.evaluatePolicy(
             policy,
-            localizedReason: AppLocalization.string("Enable biometric lock for Yanami Next", language: draft.language)
+            localizedReason: AppLocalization.string(
+                enabling
+                    ? "Enable biometric lock for Yanami Next"
+                    : "Disable biometric lock for Yanami Next",
+                language: draft.language
+            )
         ) { success, _ in
             DispatchQueue.main.async {
+                guard biometricAuthorizationLease == lease,
+                      store.canApplyBiometricLockAuthorization(lease) else {
+                    finishBiometricAuthorization(lease: lease, context: context)
+                    return
+                }
                 if success {
                     biometricError = nil
-                    onSuccess()
+                    onSuccess(context)
                 } else {
                     biometricError = AppLocalization.string("Biometric authentication failed.", language: draft.language)
                 }
+                finishBiometricAuthorization(lease: lease, context: context)
             }
+        }
+    }
+
+    private func finishBiometricAuthorization(
+        lease: BiometricLockAuthorizationLease,
+        context: LAContext
+    ) {
+        context.invalidate()
+        store.endBiometricLockAuthorization(lease)
+        if biometricAuthorizationLease == lease {
+            biometricAuthorizationLease = nil
+            biometricAuthenticationContext = nil
         }
     }
 }

@@ -139,8 +139,8 @@ struct ServerProfile: Codable, Equatable, Identifiable {
             return false
         }
         return !Set([
-            "authorization", "cookie", "host", "content-length", "connection", "upgrade", "origin"
-        ]).contains(name.lowercased())
+            "authorization", "cookie", "host", "content-length", "connection", "upgrade", "origin",
+        ]).contains(name.lowercased()) && !isReservedTerminalSensitiveHeaderName(name)
     }
 }
 
@@ -242,15 +242,11 @@ struct KomariNode: Identifiable, Equatable {
 
     var trafficLimitUsage: (used: Int64, fraction: Double)? {
         guard trafficLimit > 0 else { return nil }
-        let kind = trafficLimitType.lowercased()
-        let used: Int64
-        switch kind {
-        case "max": used = max(netTotalUp, netTotalDown)
-        case "min": used = min(netTotalUp, netTotalDown)
-        case "up": used = netTotalUp
-        case "down": used = netTotalDown
-        default: used = netTotalUp + netTotalDown
-        }
+        let used = trafficLimitUsedBytes(
+            upload: netTotalUp,
+            download: netTotalDown,
+            type: trafficLimitType
+        )
         return (used, Double(used) / Double(trafficLimit))
     }
 }
@@ -294,12 +290,12 @@ func shouldAcceptStatusSample(
     let candidateTime = (incomingTime ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
 
     if !candidateTime.isEmpty {
+        guard let candidateDate = parseStatusDate(candidateTime) else { return false }
         if storedTime.isEmpty { return true }
         if candidateTime == storedTime { return false }
-        guard let storedDate = parseStatusDate(storedTime),
-              let candidateDate = parseStatusDate(candidateTime) else {
-            return false
-        }
+        // Heal malformed state produced by older builds/initial responses with the first valid
+        // timestamp instead of permanently freezing the node.
+        guard let storedDate = parseStatusDate(storedTime) else { return true }
         return candidateDate > storedDate
     }
     if !storedTime.isEmpty { return false }
@@ -325,6 +321,12 @@ func shouldAcceptStatusSample(
         return false
     }
     return incomingTotalUp > current.netTotalUp || incomingTotalDown > current.netTotalDown
+}
+
+func validatedStatusTimeOrEmpty(_ value: String?) -> String {
+    let candidate = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !candidate.isEmpty, parseStatusDate(candidate) != nil else { return "" }
+    return candidate
 }
 
 private func parseStatusDate(_ value: String) -> Date? {

@@ -11,6 +11,6 @@ class RefreshWidgetAction : ActionCallback {
         glanceId: GlanceId,
         parameters: ActionParameters
     ) {
-        WidgetUpdateWorker.enqueue(context, immediate = true)
+        WidgetUpdateWorker.enqueueImmediate(context)
     }
 }

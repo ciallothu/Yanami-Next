@@ -50,6 +50,10 @@ internal fun PingTaskChart(
         times: List<String>,
         chartAnimationEnabled: Boolean = true
 ) {
+    val pointCount = minOf(values.size, times.size)
+    val chartValues = remember(values, times) { values.take(pointCount) }
+    val chartTimes = remember(values, times) { times.take(pointCount) }
+
     Column {
         Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -70,49 +74,56 @@ internal fun PingTaskChart(
         }
         Spacer(modifier = Modifier.height(4.dp))
 
-        val modelProducer = remember { CartesianChartModelProducer() }
-        LaunchedEffect(values) {
-            modelProducer.runTransaction { lineSeries { series(values) } }
-        }
+        if (chartValues.size >= 2) {
+            val modelProducer = remember { CartesianChartModelProducer() }
+            LaunchedEffect(chartValues) {
+                modelProducer.runTransaction { lineSeries { series(chartValues) } }
+            }
 
-        val yAxisFormatter = remember {
-            CartesianValueFormatter { _, value, _ -> "%.0fms".format(value) }
-        }
-        val xAxisFormatter =
-                remember(times) {
-                    CartesianValueFormatter { _, value, _ ->
-                        val index = value.toInt().coerceIn(0, times.size - 1)
-                        if (index in times.indices) parseTimeLabel(times[index]) else ""
+            val yAxisFormatter = remember {
+                CartesianValueFormatter { _, value, _ -> "%.0fms".format(value) }
+            }
+            val xAxisFormatter =
+                    remember(chartTimes) {
+                        CartesianValueFormatter { _, value, _ ->
+                            val index = value.toInt().coerceIn(chartTimes.indices)
+                            parseTimeLabel(chartTimes[index])
+                        }
                     }
-                }
 
-        val pingLine = rememberThemedLine(MaterialTheme.colorScheme.tertiary)
-        CartesianChartHost(
-                chart =
-                        rememberCartesianChart(
-                                rememberLineCartesianLayer(
-                                        LineCartesianLayer.LineProvider.series(pingLine)
-                                ),
-                                startAxis = VerticalAxis.rememberStart(valueFormatter = yAxisFormatter),
-                                bottomAxis =
-                                        HorizontalAxis.rememberBottom(
-                                                valueFormatter = xAxisFormatter
-                                        )
-                        ),
-                modelProducer = modelProducer,
-                modifier = Modifier.fillMaxWidth().height(140.dp),
-                scrollState = rememberVicoScrollState(scrollEnabled = false),
-                zoomState =
-                        rememberVicoZoomState(
-                                zoomEnabled = false,
-                                initialZoom = Zoom.Content
-                        ),
-                animationSpec =
-                        if (chartAnimationEnabled) {
-                            tween(durationMillis = 300, easing = LinearEasing)
-                        } else null,
-                animateIn = chartAnimationEnabled
-        )
+            val pingLine = rememberThemedLine(MaterialTheme.colorScheme.tertiary)
+            CartesianChartHost(
+                    chart =
+                            rememberCartesianChart(
+                                    rememberLineCartesianLayer(
+                                            LineCartesianLayer.LineProvider.series(pingLine)
+                                    ),
+                                    startAxis =
+                                            VerticalAxis.rememberStart(
+                                                    valueFormatter = yAxisFormatter
+                                            ),
+                                    bottomAxis =
+                                            HorizontalAxis.rememberBottom(
+                                                    valueFormatter = xAxisFormatter
+                                            )
+                            ),
+                    modelProducer = modelProducer,
+                    modifier = Modifier.fillMaxWidth().height(140.dp),
+                    scrollState = rememberVicoScrollState(scrollEnabled = false),
+                    zoomState =
+                            rememberVicoZoomState(
+                                    zoomEnabled = false,
+                                    initialZoom = Zoom.Content
+                            ),
+                    animationSpec =
+                            if (chartAnimationEnabled) {
+                                tween(durationMillis = 300, easing = LinearEasing)
+                            } else null,
+                    animateIn = chartAnimationEnabled
+            )
+        } else {
+            ChartEmptyState(height = 100.dp)
+        }
     }
 }
 
@@ -153,6 +164,9 @@ internal fun ChartCard(
         suffix: String,
         chartAnimationEnabled: Boolean = true
 ) {
+    val pointCount = minOf(data.size, times.size)
+    val chartData = remember(data, times) { data.take(pointCount) }
+    val chartTimes = remember(data, times) { times.take(pointCount) }
     val themedLine = rememberThemedLine(color)
     Column {
         Row(
@@ -166,26 +180,28 @@ internal fun ChartCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                    text = "%.0f".format(data.last()) + suffix,
+                    text = chartData.lastOrNull()?.let { "%.0f".format(it) + suffix } ?: "—",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Spacer(modifier = Modifier.height(4.dp))
 
-        if (data.size >= 2) {
+        if (chartData.size >= 2) {
             val modelProducer = remember { CartesianChartModelProducer() }
-            LaunchedEffect(data) { modelProducer.runTransaction { lineSeries { series(data) } } }
+            LaunchedEffect(chartData) {
+                modelProducer.runTransaction { lineSeries { series(chartData) } }
+            }
 
             val yAxisFormatter =
                     remember(suffix) {
                         CartesianValueFormatter { _, value, _ -> "%.0f".format(value) + suffix }
                     }
             val xAxisFormatter =
-                    remember(times) {
+                    remember(chartTimes) {
                         CartesianValueFormatter { _, value, _ ->
-                            val index = value.toInt().coerceIn(0, times.size - 1)
-                            if (index in times.indices) parseTimeLabel(times[index]) else ""
+                            val index = value.toInt().coerceIn(chartTimes.indices)
+                            parseTimeLabel(chartTimes[index])
                         }
                     }
 
@@ -216,16 +232,7 @@ internal fun ChartCard(
                     animateIn = chartAnimationEnabled
             )
         } else {
-            Box(
-                    modifier = Modifier.fillMaxWidth().height(80.dp),
-                    contentAlignment = Alignment.Center
-            ) {
-                Text(
-                        text = stringResource(R.string.node_detail_insufficient_data),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            ChartEmptyState()
         }
     }
 }
@@ -239,6 +246,10 @@ internal fun ConnectionChartCard(
         suffix: String,
         chartAnimationEnabled: Boolean = true
 ) {
+    val pointCount = minOf(tcpData.size, udpData.size, times.size)
+    val chartTcpData = remember(tcpData, udpData, times) { tcpData.take(pointCount) }
+    val chartUdpData = remember(tcpData, udpData, times) { udpData.take(pointCount) }
+    val chartTimes = remember(tcpData, udpData, times) { times.take(pointCount) }
     val tcpLine = rememberThemedLine(MaterialTheme.colorScheme.primary)
     val udpLine = rememberThemedLine(MaterialTheme.colorScheme.tertiary)
     Column {
@@ -255,13 +266,13 @@ internal fun ConnectionChartCard(
             Text(
                     text = buildAnnotatedString {
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("TCP " + tcpData.last().toString() + suffix)
+                            append("TCP " + (chartTcpData.lastOrNull()?.toString() ?: "—") + suffix)
                         }
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
                             append(" / ")
                         }
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.tertiary)) {
-                            append("UDP " + udpData.last().toString() + suffix)
+                            append("UDP " + (chartUdpData.lastOrNull()?.toString() ?: "—") + suffix)
                         }
                     },
                     style = MaterialTheme.typography.labelMedium
@@ -269,13 +280,13 @@ internal fun ConnectionChartCard(
         }
         Spacer(modifier = Modifier.height(4.dp))
 
-        if (tcpData.size >= 2) {
+        if (pointCount >= 2) {
             val modelProducer = remember { CartesianChartModelProducer() }
-            LaunchedEffect(tcpData, udpData) {
+            LaunchedEffect(chartTcpData, chartUdpData) {
                 modelProducer.runTransaction {
                     lineSeries {
-                        series(tcpData)
-                        series(udpData)
+                        series(chartTcpData)
+                        series(chartUdpData)
                     }
                 }
             }
@@ -285,10 +296,10 @@ internal fun ConnectionChartCard(
                         CartesianValueFormatter { _, value, _ -> "%.0f".format(value) + suffix }
                     }
             val xAxisFormatter =
-                    remember(times) {
+                    remember(chartTimes) {
                         CartesianValueFormatter { _, value, _ ->
-                            val index = value.toInt().coerceIn(0, times.size - 1)
-                            if (index in times.indices) parseTimeLabel(times[index]) else ""
+                            val index = value.toInt().coerceIn(chartTimes.indices)
+                            parseTimeLabel(chartTimes[index])
                         }
                     }
 
@@ -318,6 +329,8 @@ internal fun ConnectionChartCard(
                             } else null,
                     animateIn = chartAnimationEnabled
             )
+        } else {
+            ChartEmptyState()
         }
     }
 }
@@ -331,6 +344,10 @@ internal fun NetworkChartCard(
         chartAnimationEnabled: Boolean = true,
         showAsSpeed: Boolean = true
 ) {
+    val pointCount = minOf(netInData.size, netOutData.size, times.size)
+    val chartNetInData = remember(netInData, netOutData, times) { netInData.take(pointCount) }
+    val chartNetOutData = remember(netInData, netOutData, times) { netOutData.take(pointCount) }
+    val chartTimes = remember(netInData, netOutData, times) { times.take(pointCount) }
     val formatter: (Double) -> String = if (showAsSpeed) ::formatChartSpeed else ::formatChartBytes
     val upLine = rememberThemedLine(MaterialTheme.colorScheme.primary)
     val downLine = rememberThemedLine(MaterialTheme.colorScheme.tertiary)
@@ -348,13 +365,13 @@ internal fun NetworkChartCard(
             Text(
                     text = buildAnnotatedString {
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.tertiary)) {
-                            append("↓ " + formatter(netInData.last()))
+                            append("↓ " + (chartNetInData.lastOrNull()?.let(formatter) ?: "—"))
                         }
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
                             append(" / ")
                         }
                         withStyle(SpanStyle(color = MaterialTheme.colorScheme.primary)) {
-                            append("↑ " + formatter(netOutData.last()))
+                            append("↑ " + (chartNetOutData.lastOrNull()?.let(formatter) ?: "—"))
                         }
                     },
                     style = MaterialTheme.typography.labelMedium
@@ -362,13 +379,13 @@ internal fun NetworkChartCard(
         }
         Spacer(modifier = Modifier.height(4.dp))
 
-        if (netInData.size >= 2) {
+        if (pointCount >= 2) {
             val modelProducer = remember { CartesianChartModelProducer() }
-            LaunchedEffect(netInData, netOutData) {
+            LaunchedEffect(chartNetInData, chartNetOutData) {
                 modelProducer.runTransaction {
                     lineSeries {
-                        series(netOutData)
-                        series(netInData)
+                        series(chartNetOutData)
+                        series(chartNetInData)
                     }
                 }
             }
@@ -377,10 +394,10 @@ internal fun NetworkChartCard(
                 CartesianValueFormatter { _, value, _ -> formatter(value) }
             }
             val xAxisFormatter =
-                    remember(times) {
+                    remember(chartTimes) {
                         CartesianValueFormatter { _, value, _ ->
-                            val index = value.toInt().coerceIn(0, times.size - 1)
-                            if (index in times.indices) parseTimeLabel(times[index]) else ""
+                            val index = value.toInt().coerceIn(chartTimes.indices)
+                            parseTimeLabel(chartTimes[index])
                         }
                     }
 
@@ -410,7 +427,23 @@ internal fun NetworkChartCard(
                             } else null,
                     animateIn = chartAnimationEnabled
             )
+        } else {
+            ChartEmptyState()
         }
+    }
+}
+
+@Composable
+private fun ChartEmptyState(height: androidx.compose.ui.unit.Dp = 80.dp) {
+    Box(
+            modifier = Modifier.fillMaxWidth().height(height),
+            contentAlignment = Alignment.Center
+    ) {
+        Text(
+                text = stringResource(R.string.node_detail_insufficient_data),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

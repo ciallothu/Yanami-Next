@@ -8,12 +8,16 @@ final class SshTerminalViewModel: ObservableObject {
     @Published var error: String?
     @Published var ctrlActive = false
     @Published var altActive = false
+    @Published private(set) var shouldRequestTwoFactorOnRetry = false
+    @Published private(set) var shouldRefreshAuthenticationOnRetry = false
 
     private static let maximumBufferedOutputBytes = 1_048_576
 
     private let uuid: String
     private let server: ServerProfile
     private let token: String
+    private let requiresSensitiveTwoFactorForEveryHandshake: Bool
+    private var pendingTwoFactorCode: String?
 
     private var urlSession: URLSession?
     private var sessionDelegate: TerminalWebSocketSessionDelegate?
@@ -21,16 +25,26 @@ final class SshTerminalViewModel: ObservableObject {
     private var pingTimer: Timer?
     private var pingInFlight = false
     private var isDisconnecting = false
+    private var currentHandshakeUsedTwoFactor = false
     private var lastTerminalSize: (cols: Int, rows: Int)?
 
     private var outputSinkID: UUID?
     private var outputSink: ((Data) -> Void)?
     private var bufferedOutput = Data()
 
-    init(uuid: String, server: ServerProfile, token: String) {
+    init(
+        uuid: String,
+        server: ServerProfile,
+        token: String,
+        oneTimeTwoFactorCode: String? = nil
+    ) {
         self.uuid = uuid
         self.server = server
         self.token = token
+        requiresSensitiveTwoFactorForEveryHandshake =
+            server.authType == .password &&
+            (server.requires2FA || oneTimeTwoFactorCode != nil)
+        pendingTwoFactorCode = oneTimeTwoFactorCode
     }
 
     func connect() {
@@ -40,7 +54,11 @@ final class SshTerminalViewModel: ObservableObject {
         isConnecting = true
         isConnected = false
         error = nil
+        shouldRequestTwoFactorOnRetry = false
+        shouldRefreshAuthenticationOnRetry = false
 
+        let oneTimeTwoFactorCode = pendingTwoFactorCode
+        pendingTwoFactorCode = nil
         guard let url = buildTerminalURL() else {
             error = "Invalid terminal URL"
             isConnecting = false
@@ -53,6 +71,22 @@ final class SshTerminalViewModel: ObservableObject {
             request.setValue(header.value, forHTTPHeaderField: header.name)
         }
         applyAuthentication(to: &request)
+        if requiresSensitiveTwoFactorForEveryHandshake {
+            guard let header = makeTerminalSensitiveHeader(
+                authType: server.authType.rawValue,
+                requiresTwoFactor: true,
+                oneTimeCode: oneTimeTwoFactorCode
+            ) else {
+                isConnecting = false
+                shouldRequestTwoFactorOnRetry = true
+                error = "A fresh 6-digit two-factor code is required for this terminal connection."
+                return
+            }
+            request.setValue(header.value, forHTTPHeaderField: header.name)
+            currentHandshakeUsedTwoFactor = true
+        } else {
+            currentHandshakeUsedTwoFactor = false
+        }
         request.setValue(buildOrigin(), forHTTPHeaderField: "Origin")
 
         let delegate = TerminalWebSocketSessionDelegate(
@@ -143,6 +177,8 @@ final class SshTerminalViewModel: ObservableObject {
         isConnecting = false
         isConnected = true
         error = nil
+        shouldRequestTwoFactorOnRetry = false
+        shouldRefreshAuthenticationOnRetry = false
         if let lastTerminalSize {
             sendResizeMessage(cols: lastTerminalSize.cols, rows: lastTerminalSize.rows)
         }
@@ -168,6 +204,13 @@ final class SshTerminalViewModel: ObservableObject {
         error = reasonText?.isEmpty == false
             ? reasonText
             : "Terminal connection closed (\(code.rawValue))"
+    }
+
+    fileprivate func webSocketDidComplete(
+        _ task: URLSessionWebSocketTask,
+        error: Error
+    ) {
+        handleConnectionFailure(error, task: task)
     }
 
     private func applyAuthentication(to request: inout URLRequest) {
@@ -291,6 +334,11 @@ final class SshTerminalViewModel: ObservableObject {
 
     private func handleConnectionFailure(_ failure: Error, task: URLSessionWebSocketTask) {
         guard webSocketTask === task else { return }
+        let statusCode = (task.response as? HTTPURLResponse)?.statusCode
+        let authenticationFailure = isTerminalAuthenticationFailure(
+            statusCode: statusCode,
+            errorDescription: failure.localizedDescription
+        )
         stopPingTimer()
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
@@ -299,7 +347,17 @@ final class SshTerminalViewModel: ObservableObject {
         isConnecting = false
         isConnected = false
         if !isDisconnecting {
-            error = failure.localizedDescription
+            if authenticationFailure, server.authType == .password {
+                shouldRequestTwoFactorOnRetry = true
+                shouldRefreshAuthenticationOnRetry = true
+                error = currentHandshakeUsedTwoFactor
+                    ? "The two-factor code was invalid or expired, or the login session has expired. Try a fresh code; re-login if it continues to fail."
+                    : "Terminal authentication was denied. If this account uses two-factor authentication, retry with the current code."
+            } else {
+                shouldRequestTwoFactorOnRetry = false
+                shouldRefreshAuthenticationOnRetry = authenticationFailure
+                error = failure.localizedDescription
+            }
         }
     }
 
@@ -407,6 +465,17 @@ private final class TerminalWebSocketSessionDelegate: NSObject, URLSessionWebSoc
     ) {
         Task { @MainActor [weak owner] in
             owner?.webSocketDidClose(webSocketTask, code: closeCode, reason: reason)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let error, let webSocketTask = task as? URLSessionWebSocketTask else { return }
+        Task { @MainActor [weak owner] in
+            owner?.webSocketDidComplete(webSocketTask, error: error)
         }
     }
 

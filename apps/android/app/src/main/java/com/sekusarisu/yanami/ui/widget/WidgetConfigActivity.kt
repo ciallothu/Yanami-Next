@@ -48,7 +48,7 @@ class WidgetConfigActivity : AppCompatActivity() {
         // Default: CANCELED so back-press removes the widget
         setResult(RESULT_CANCELED, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
 
-        val intervals = listOf(5, 15, 30, 60, 180)
+        val intervals = listOf(15, 30, 60, 180)
 
         setContent {
             MaterialTheme {
@@ -67,7 +67,6 @@ class WidgetConfigActivity : AppCompatActivity() {
 
                         var selectedMinutes by remember { mutableIntStateOf(30) }
                         val labels = listOf(
-                            stringResource(R.string.widget_interval_5m),
                             stringResource(R.string.widget_interval_15m),
                             stringResource(R.string.widget_interval_30m),
                             stringResource(R.string.widget_interval_1h),
@@ -113,9 +112,9 @@ class WidgetConfigActivity : AppCompatActivity() {
                                 onClick = {
                                     WidgetUpdateWorker.enqueue(
                                         this@WidgetConfigActivity,
-                                        intervalMinutes = selectedMinutes,
-                                        immediate = true
+                                        intervalMinutes = selectedMinutes
                                     )
+                                    WidgetUpdateWorker.enqueueImmediate(this@WidgetConfigActivity)
                                     setResult(
                                         RESULT_OK,
                                         Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)

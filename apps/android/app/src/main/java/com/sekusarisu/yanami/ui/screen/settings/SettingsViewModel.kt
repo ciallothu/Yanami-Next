@@ -7,12 +7,14 @@ import androidx.core.os.LocaleListCompat
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.data.backup.ConfigBackupManager
+import com.sekusarisu.yanami.data.local.crypto.BiometricLockManager
 import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
 import com.sekusarisu.yanami.mvi.MviViewModel
 import com.sekusarisu.yanami.mvi.UiEffect
 import com.sekusarisu.yanami.mvi.UiEvent
 import com.sekusarisu.yanami.mvi.UiState
 import com.sekusarisu.yanami.ui.theme.ThemeColor
+import com.sekusarisu.yanami.ui.widget.WidgetUpdateWorker
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -26,7 +28,9 @@ data class SettingsState(
         val autoEnterNodeList: Boolean = false,
         val chartAnimationEnabled: Boolean = true,
         val biometricEnabled: Boolean = false,
+        val biometricEnvelope: String? = null,
         val maskIpEnabled: Boolean = false,
+        val isBiometricMutationInProgress: Boolean = false,
         val isBackupInProgress: Boolean = false
 ) : UiState
 
@@ -38,7 +42,11 @@ sealed interface SettingsEvent : UiEvent {
     data class SetFontScale(val scale: Float) : SettingsEvent
     data class SetAutoEnterNodeList(val enabled: Boolean) : SettingsEvent
     data class SetChartAnimation(val enabled: Boolean) : SettingsEvent
-    data class SetBiometricEnabled(val enabled: Boolean) : SettingsEvent
+    data class SetBiometricEnabled(
+            val enabled: Boolean,
+            val previousEnvelope: String?,
+            val verifiedEnvelope: String
+    ) : SettingsEvent
     data class SetMaskIpEnabled(val enabled: Boolean) : SettingsEvent
 }
 
@@ -51,6 +59,7 @@ sealed interface SettingsEffect : UiEffect {
 class SettingsViewModel(
         private val prefsRepo: UserPreferencesRepository,
         private val configBackupManager: ConfigBackupManager,
+        private val biometricLockManager: BiometricLockManager,
         private val context: Context
 ) :
         MviViewModel<SettingsState, SettingsEvent, SettingsEffect>(SettingsState()) {
@@ -68,6 +77,7 @@ class SettingsViewModel(
                                 autoEnterNodeList = prefs.autoEnterNodeList,
                                 chartAnimationEnabled = prefs.chartAnimationEnabled,
                                 biometricEnabled = prefs.biometricEnabled,
+                                biometricEnvelope = prefs.biometricEnvelope,
                                 maskIpEnabled = prefs.maskIpEnabled
                         )
                     }
@@ -99,12 +109,63 @@ class SettingsViewModel(
                 screenModelScope.launch { prefsRepo.setChartAnimation(event.enabled) }
             }
             is SettingsEvent.SetBiometricEnabled -> {
-                screenModelScope.launch { prefsRepo.setBiometricEnabled(event.enabled) }
+                requestBiometricLockChange(
+                        event.enabled,
+                        event.previousEnvelope,
+                        event.verifiedEnvelope
+                )
             }
             is SettingsEvent.SetMaskIpEnabled -> {
                 screenModelScope.launch { prefsRepo.setMaskIpEnabled(event.enabled) }
             }
         }
+    }
+
+    /**
+     * Starts a serialized lock mutation and reports whether the authenticated session was accepted.
+     * The previous envelope binds the result to the state for which the prompt was opened.
+     */
+    fun requestBiometricLockChange(
+            enabled: Boolean,
+            previousEnvelope: String?,
+            verifiedEnvelope: String
+    ): Boolean {
+        if (currentState.isBiometricMutationInProgress ||
+                        currentState.biometricEnvelope != previousEnvelope
+        ) {
+            return false
+        }
+
+        setState { copy(isBiometricMutationInProgress = true) }
+        screenModelScope.launch {
+            try {
+                WidgetUpdateWorker.transitionLockState(context, enabled) {
+                    prefsRepo.setBiometricLock(
+                            enabled,
+                            if (enabled) verifiedEnvelope else null
+                    )
+                    if (enabled) {
+                        // Obsolete aliases are removed only after the new envelope is durably
+                        // stored, so an interrupted migration remains recoverable.
+                        biometricLockManager.retainKeyForEnvelope(verifiedEnvelope)
+                    } else {
+                        biometricLockManager.deleteKeys()
+                    }
+                }
+            } catch (_: Exception) {
+                if (verifiedEnvelope != previousEnvelope) {
+                    biometricLockManager.discardUnpersistedEnvelope(verifiedEnvelope)
+                }
+                sendEffect(
+                        SettingsEffect.ShowToast(
+                                context.getString(R.string.biometric_verification_failed)
+                        )
+                )
+            } finally {
+                setState { copy(isBiometricMutationInProgress = false) }
+            }
+        }
+        return true
     }
 
     fun exportConfig(uri: Uri) {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Code
@@ -22,6 +23,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,7 +41,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cafe.adriel.voyager.core.screen.Screen
@@ -60,15 +69,21 @@ class SshTerminalScreen(private val uuid: String, private val nodeName: String) 
         val state by viewModel.state.collectAsState()
         val navigator = LocalNavigator.currentOrThrow
         val context = LocalContext.current
+        val resources = LocalResources.current
         val snippetNameEmptyMessage = stringResource(R.string.terminal_snippet_name_empty)
         val snippetContentEmptyMessage = stringResource(R.string.terminal_snippet_content_empty)
 
-        LaunchedEffect(Unit) {
+        LaunchedEffect(viewModel, context, resources) {
             viewModel.effect.collect { effect ->
                 when (effect) {
                     is SshTerminalContract.Effect.NavigateBack -> navigator.pop()
                     is SshTerminalContract.Effect.ShowToast ->
-                            Toast.makeText(context, effect.message, Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                            context,
+                                            resources.getString(effect.message),
+                                            Toast.LENGTH_SHORT
+                                    )
+                                    .show()
                 }
             }
         }
@@ -104,13 +119,29 @@ class SshTerminalScreen(private val uuid: String, private val nodeName: String) 
                                     Text(
                                             text =
                                                     when {
-                                                        state.isConnecting -> "正在连接…"
-                                                        state.isConnected -> "已连接"
-                                                        state.error != null -> "连接失败"
-                                                        else -> "SSH 终端"
+                                                        state.isConnecting ->
+                                                                stringResource(
+                                                                        R.string.terminal_status_connecting
+                                                                )
+                                                        state.isConnected ->
+                                                                stringResource(
+                                                                        R.string.terminal_status_connected
+                                                                )
+                                                        state.error != null ->
+                                                                stringResource(
+                                                                        R.string.terminal_status_failed
+                                                                )
+                                                        else ->
+                                                                stringResource(
+                                                                        R.string.action_ssh_terminal
+                                                                )
                                                     },
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier =
+                                                    Modifier.semantics {
+                                                        liveRegion = LiveRegionMode.Polite
+                                                    }
                                     )
                                 }
                             },
@@ -182,7 +213,7 @@ class SshTerminalScreen(private val uuid: String, private val nodeName: String) 
                                     CircularProgressIndicator(color = Color.White)
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Text(
-                                            "正在连接 SSH…",
+                                            stringResource(R.string.terminal_connecting_ssh),
                                             color = Color.White,
                                             style = MaterialTheme.typography.bodyMedium
                                     )
@@ -202,19 +233,32 @@ class SshTerminalScreen(private val uuid: String, private val nodeName: String) 
                                         modifier = Modifier.padding(24.dp)
                                 ) {
                                     Text(
-                                            "连接失败",
+                                            stringResource(R.string.terminal_status_failed),
                                             color = Color.White,
                                             style = MaterialTheme.typography.titleMedium
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Text(
-                                            state.error!!,
+                                            stringResource(state.error!!),
                                             color = Color.LightGray,
                                             style = MaterialTheme.typography.bodySmall
                                     )
                                     Spacer(modifier = Modifier.height(16.dp))
+                                    TextButton(
+                                            onClick = soundClick {
+                                                viewModel.onEvent(SshTerminalContract.Event.Retry)
+                                            }
+                                    ) {
+                                        Text(
+                                                stringResource(R.string.action_retry),
+                                                color = Color.White
+                                        )
+                                    }
                                     TextButton(onClick = soundClick { navigator.pop() }) {
-                                        Text("返回", color = Color.White)
+                                        Text(
+                                                stringResource(R.string.action_back),
+                                                color = Color.White
+                                        )
                                     }
                                 }
                             }
@@ -260,6 +304,79 @@ class SshTerminalScreen(private val uuid: String, private val nodeName: String) 
                         onSend = viewModel::sendSnippet
                 )
             }
+        }
+
+        if (state.showTwoFactorPrompt) {
+            var twoFactorCode by remember { mutableStateOf("") }
+            AlertDialog(
+                    onDismissRequest = {
+                        twoFactorCode = ""
+                        viewModel.onEvent(SshTerminalContract.Event.CancelTwoFactorPrompt)
+                    },
+                    title = { Text(stringResource(R.string.terminal_2fa_title)) },
+                    text = {
+                        Column {
+                            Text(stringResource(R.string.terminal_2fa_description))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            OutlinedTextField(
+                                    value = twoFactorCode,
+                                    onValueChange = { value ->
+                                        twoFactorCode =
+                                                value.filter { it in '0'..'9' }.take(6)
+                                    },
+                                    label = { Text(stringResource(R.string.terminal_2fa_label)) },
+                                    singleLine = true,
+                                    isError = state.hasTwoFactorError,
+                                    supportingText =
+                                            if (state.hasTwoFactorError) {
+                                                {
+                                                    Text(
+                                                            stringResource(
+                                                                    R.string.terminal_2fa_invalid
+                                                            )
+                                                    )
+                                                }
+                                            } else {
+                                                null
+                                            },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    keyboardOptions =
+                                            KeyboardOptions(
+                                                    keyboardType = KeyboardType.NumberPassword,
+                                                    imeAction = ImeAction.Done
+                                            )
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                                enabled = twoFactorCode.length == 6,
+                                onClick = soundClick {
+                                    val submittedCode = twoFactorCode
+                                    twoFactorCode = ""
+                                    viewModel.onEvent(
+                                            SshTerminalContract.Event.SubmitTwoFactorCode(
+                                                    submittedCode
+                                            )
+                                    )
+                                }
+                        ) {
+                            Text(stringResource(R.string.action_confirm))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                                onClick = soundClick {
+                                    twoFactorCode = ""
+                                    viewModel.onEvent(
+                                            SshTerminalContract.Event.CancelTwoFactorPrompt
+                                    )
+                                }
+                        ) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
+                    }
+            )
         }
 
         if (showSnippetEditorDialog) {

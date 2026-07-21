@@ -61,9 +61,11 @@ import cafe.adriel.voyager.koin.koinScreenModel
 import cafe.adriel.voyager.navigator.LocalNavigator
 import cafe.adriel.voyager.navigator.currentOrThrow
 import com.sekusarisu.yanami.R
+import com.sekusarisu.yanami.data.local.crypto.BiometricLockManager
 import com.sekusarisu.yanami.ui.screen.AdaptiveContentPane
 import com.sekusarisu.yanami.ui.screen.rememberAdaptiveLayoutInfo
 import com.sekusarisu.yanami.ui.screen.soundClick
+import org.koin.compose.koinInject
 
 class SettingsHubScreen : Screen {
 
@@ -73,12 +75,15 @@ class SettingsHubScreen : Screen {
         val navigator = LocalNavigator.currentOrThrow
         val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
         val viewModel = koinScreenModel<SettingsViewModel>()
+        val biometricLockManager = koinInject<BiometricLockManager>()
         val state by viewModel.state.collectAsState()
         var showLanguageDialog by remember { mutableStateOf(false) }
+        var biometricPromptInFlight by remember { mutableStateOf(false) }
         val context = LocalContext.current
         val adaptiveInfo = rememberAdaptiveLayoutInfo()
         val biometricPromptTitle = stringResource(R.string.biometric_prompt_title)
         val biometricPromptSubtitle = stringResource(R.string.biometric_prompt_subtitle)
+        val biometricPromptCancel = stringResource(R.string.action_cancel)
         val exportLauncher =
                 rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) {
                     uri -> if (uri != null) viewModel.exportConfig(uri)
@@ -154,11 +159,19 @@ class SettingsHubScreen : Screen {
                     title = stringResource(R.string.settings_biometric),
                     subtitle = stringResource(R.string.settings_biometric_desc),
                     checked = state.biometricEnabled,
+                    enabled = !biometricPromptInFlight && !state.isBiometricMutationInProgress,
                     onCheckedChange = { newValue ->
+                        if (biometricPromptInFlight || state.isBiometricMutationInProgress) {
+                            return@SettingsToggleItem
+                        }
+                        biometricPromptInFlight = true
                         authenticateWithBiometric(
                             activity = context as FragmentActivity,
+                            biometricLockManager = biometricLockManager,
+                            encodedEnvelope = state.biometricEnvelope,
                             title = biometricPromptTitle,
                             subtitle = biometricPromptSubtitle,
+                            cancelText = biometricPromptCancel,
                             onUnavailable = {
                                 Toast.makeText(
                                                 context,
@@ -167,8 +180,21 @@ class SettingsHubScreen : Screen {
                                         )
                                         .show()
                             },
-                            onSuccess = {
-                                viewModel.onEvent(SettingsEvent.SetBiometricEnabled(newValue))
+                            onVerificationFailed = {
+                                Toast.makeText(
+                                                context,
+                                                R.string.biometric_verification_failed,
+                                                Toast.LENGTH_SHORT
+                                        )
+                                        .show()
+                            },
+                            onFinished = { biometricPromptInFlight = false },
+                            onSuccess = { verifiedEnvelope ->
+                                viewModel.requestBiometricLockChange(
+                                        enabled = newValue,
+                                        previousEnvelope = state.biometricEnvelope,
+                                        verifiedEnvelope = verifiedEnvelope
+                                )
                             }
                         )
                     }
@@ -339,18 +365,38 @@ private fun SectionHeader(title: String) {
  */
 private fun authenticateWithBiometric(
         activity: FragmentActivity,
+        biometricLockManager: BiometricLockManager,
+        encodedEnvelope: String?,
         title: String,
         subtitle: String,
+        cancelText: String,
         onUnavailable: () -> Unit,
-        onSuccess: () -> Unit
+        onVerificationFailed: () -> Unit,
+        onFinished: () -> Unit,
+        onSuccess: (String) -> Boolean
 ) {
-    val authenticators =
-            BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    val authenticators = biometricLockManager.allowedAuthenticators
     val canAuth = BiometricManager.from(activity).canAuthenticate(authenticators)
     if (canAuth != BiometricManager.BIOMETRIC_SUCCESS) {
         onUnavailable()
+        onFinished()
         return
+    }
+
+    val session =
+            try {
+                biometricLockManager.prepareAuthentication(encodedEnvelope)
+            } catch (_: Exception) {
+                onVerificationFailed()
+                onFinished()
+                return
+            }
+    var finished = false
+    fun finishOnce() {
+        if (!finished) {
+            finished = true
+            onFinished()
+        }
     }
     val prompt =
             BiometricPrompt(
@@ -360,18 +406,50 @@ private fun authenticateWithBiometric(
                         override fun onAuthenticationSucceeded(
                                 result: BiometricPrompt.AuthenticationResult
                         ) {
-                            onSuccess()
+                            if (finished) return
+                            val verifiedEnvelope =
+                                    biometricLockManager.completeAuthentication(session, result)
+                            if (verifiedEnvelope == null) {
+                                biometricLockManager.abandonAuthentication(session)
+                                onVerificationFailed()
+                            } else if (!onSuccess(verifiedEnvelope)) {
+                                biometricLockManager.abandonAuthentication(session)
+                                onVerificationFailed()
+                            }
+                            finishOnce()
                         }
-                        // onAuthenticationError / onAuthenticationFailed → 不做任何操作，开关保持原值
+
+                        override fun onAuthenticationError(
+                                errorCode: Int,
+                                errString: CharSequence
+                        ) {
+                            if (finished) return
+                            biometricLockManager.abandonAuthentication(session)
+                            finishOnce()
+                        }
+                        // onAuthenticationFailed keeps the system prompt open and the setting intact.
                     }
             )
-    prompt.authenticate(
-            BiometricPrompt.PromptInfo.Builder()
-                    .setTitle(title)
-                    .setSubtitle(subtitle)
-                    .setAllowedAuthenticators(authenticators)
-                    .build()
-    )
+    try {
+        val promptBuilder =
+                BiometricPrompt.PromptInfo.Builder()
+                        .setTitle(title)
+                        .setSubtitle(subtitle)
+                        .setAllowedAuthenticators(authenticators)
+        if (authenticators and BiometricManager.Authenticators.DEVICE_CREDENTIAL == 0) {
+            promptBuilder.setNegativeButtonText(cancelText)
+        }
+        prompt.authenticate(
+                promptBuilder.build(),
+                session.cryptoObject
+        )
+    } catch (_: RuntimeException) {
+        if (!finished) {
+            biometricLockManager.abandonAuthentication(session)
+            onVerificationFailed()
+            finishOnce()
+        }
+    }
 }
 
 /** 开关设置项：图标 + 标题/描述 + Switch */@Composable
@@ -380,13 +458,14 @@ private fun SettingsToggleItem(
         title: String,
         subtitle: String,
         checked: Boolean,
+        enabled: Boolean = true,
         onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
             modifier =
                     Modifier
                         .fillMaxWidth()
-                        .clickable { onCheckedChange(!checked) }
+                        .clickable(enabled = enabled) { onCheckedChange(!checked) }
                         .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalAlignment = Alignment.CenterVertically
     ) {
@@ -412,6 +491,7 @@ private fun SettingsToggleItem(
         Spacer(modifier = Modifier.width(16.dp))
         Switch(
                 checked = checked,
+                enabled = enabled,
                 onCheckedChange = null
         )
     }

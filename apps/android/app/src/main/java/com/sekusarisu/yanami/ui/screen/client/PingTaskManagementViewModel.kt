@@ -598,7 +598,7 @@ class PingTaskManagementViewModel(
         return try {
             serverRepository.ensureSessionToken(server)
         } catch (e: Requires2FAException) {
-            serverRepository.updateRequires2fa(server.id, true)
+            serverRepository.updateRequires2fa(server, true)
             throw SessionExpiredException(
                 e.message ?: context.getString(R.string.error_no_session)
             )

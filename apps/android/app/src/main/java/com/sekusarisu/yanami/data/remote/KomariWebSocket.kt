@@ -24,11 +24,7 @@ internal data class KomariWebSocketEndpoint(
         val path: String,
         val isSecure: Boolean,
         val origin: String
-) {
-    private val displayHost = host.toBracketedHost()
-    val displayUrl: String
-        get() = "${if (isSecure) "wss" else "ws"}://$displayHost:$port$path"
-}
+)
 
 internal fun buildKomariWebSocketEndpoint(
         baseUrl: String,
@@ -74,11 +70,20 @@ internal suspend fun HttpClient.connectKomariWebSocket(
         sessionToken: String,
         authType: AuthType,
         customHeaders: List<CustomHeader>,
+        requiresSensitiveTwoFactor: Boolean = false,
+        oneTimeTwoFactorCode: String? = null,
         block: suspend DefaultClientWebSocketSession.() -> Unit
 ) {
+    val sensitiveTwoFactorHeader =
+            buildSensitiveTwoFactorHeader(
+                    authType = authType,
+                    requiresTwoFactor = requiresSensitiveTwoFactor,
+                    oneTimeCode = oneTimeTwoFactorCode
+            )
     val requestBuilder: HttpRequestBuilder.() -> Unit = {
         applyCustomHeaders(customHeaders.toList())
         applyAuth(sessionToken, authType)
+        sensitiveTwoFactorHeader?.let { header(it.name, it.value) }
         header("Origin", endpoint.origin)
     }
 
@@ -107,19 +112,32 @@ internal suspend fun HttpClient.runKomariWebSocketLifecycle(
         authType: AuthType,
         customHeaders: List<CustomHeader>,
         loggerTag: String,
+        requiresSensitiveTwoFactor: Boolean = false,
+        oneTimeTwoFactorCode: String? = null,
         reconnectDelayMs: Long? = null,
         maxReconnectDelayMs: Long? = reconnectDelayMs,
         reconnectJitterMs: Long = 0,
         reconnectOnNormalClose: Boolean = false,
         block: suspend DefaultClientWebSocketSession.() -> Unit
 ) {
+    require(!requiresSensitiveTwoFactor || reconnectDelayMs == null) {
+        "Sensitive WebSocket handshakes cannot automatically reuse a 2FA code"
+    }
     var reconnectAttempt = 0
     while (currentCoroutineContext().isActive) {
         var shouldReconnect = false
         var nextReconnectDelayMs: Long? = null
         try {
-            Log.d(loggerTag, "WebSocket connecting to ${endpoint.displayUrl}")
-            connectKomariWebSocket(endpoint, sessionToken, authType, customHeaders, block)
+            Log.d(loggerTag, "WebSocket connection starting")
+            connectKomariWebSocket(
+                    endpoint = endpoint,
+                    sessionToken = sessionToken,
+                    authType = authType,
+                    customHeaders = customHeaders,
+                    requiresSensitiveTwoFactor = requiresSensitiveTwoFactor,
+                    oneTimeTwoFactorCode = oneTimeTwoFactorCode,
+                    block = block
+            )
             shouldReconnect = reconnectOnNormalClose && reconnectDelayMs != null
             if (!shouldReconnect) {
                 return
@@ -140,7 +158,7 @@ internal suspend fun HttpClient.runKomariWebSocketLifecycle(
             throw e
         } catch (e: Exception) {
             if (isKomariWebSocketAuthException(e)) {
-                Log.w(loggerTag, "WebSocket auth error: ${e.message}, propagating")
+                Log.w(loggerTag, "WebSocket authentication failed; propagating")
                 throw e
             }
             if (reconnectDelayMs == null) {
@@ -156,7 +174,7 @@ internal suspend fun HttpClient.runKomariWebSocketLifecycle(
                     )
             Log.w(
                     loggerTag,
-                    "WebSocket error: ${e.message}, reconnecting in ${nextReconnectDelayMs}ms..."
+                    "WebSocket failed (${e::class.java.simpleName}); reconnecting in ${nextReconnectDelayMs}ms..."
             )
         }
 

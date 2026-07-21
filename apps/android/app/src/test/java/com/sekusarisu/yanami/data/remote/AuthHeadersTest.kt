@@ -17,7 +17,16 @@ class AuthHeadersTest {
     }
 
     @Test fun customHeadersCannotOverrideTransportOrAuthenticationBoundaries() {
-        listOf("Authorization", "Cookie", "Host", "Origin", "Connection", "Content-Length")
+        listOf(
+                        "Authorization",
+                        "Cookie",
+                        "Host",
+                        "Origin",
+                        "Connection",
+                        "Content-Length",
+                        "X-2FA-Code",
+                        "X-Two-Factor-Code"
+                )
                 .forEach { assertFalse(it, isAllowedCustomHeaderName(it)) }
         assertTrue(isAllowedCustomHeaderName("CF-Access-Client-Id"))
         listOf("X Bad", "X:\u0000Bad", "X\r\nInjected", "X-测试")
@@ -44,5 +53,55 @@ class AuthHeadersTest {
 
         assertEquals("client-a", request.headers["CF-Access-Client-Id"])
         assertEquals("session_token=server-a-token", request.headers["Cookie"])
+    }
+
+    @Test fun sensitiveTerminalHeaderIsExactAndLimitedToPasswordProfilesThatRequireIt() {
+        val header =
+                buildSensitiveTwoFactorHeader(
+                        authType = AuthType.PASSWORD,
+                        requiresTwoFactor = true,
+                        oneTimeCode = " 123456 "
+                )
+
+        assertEquals("X-2FA-Code", header?.name)
+        assertEquals("123456", header?.value)
+        assertNull(
+                buildSensitiveTwoFactorHeader(
+                        authType = AuthType.PASSWORD,
+                        requiresTwoFactor = false,
+                        oneTimeCode = "123456"
+                )
+        )
+        assertNull(
+                buildSensitiveTwoFactorHeader(
+                        authType = AuthType.API_KEY,
+                        requiresTwoFactor = true,
+                        oneTimeCode = null
+                )
+        )
+        assertNull(
+                buildSensitiveTwoFactorHeader(
+                        authType = AuthType.GUEST,
+                        requiresTwoFactor = true,
+                        oneTimeCode = "123456"
+                )
+        )
+    }
+
+    @Test fun sensitivePasswordHandshakeFailsClosedWithoutFreshAsciiTotp() {
+        listOf<String?>(null, "", "12345", "1234567", "１２３４５６", "12345\n")
+                .forEach { code ->
+                    var rejected = false
+                    try {
+                        buildSensitiveTwoFactorHeader(
+                                authType = AuthType.PASSWORD,
+                                requiresTwoFactor = true,
+                                oneTimeCode = code
+                        )
+                    } catch (_: IllegalArgumentException) {
+                        rejected = true
+                    }
+                    assertTrue("Expected sensitive code to be rejected: $code", rejected)
+                }
     }
 }

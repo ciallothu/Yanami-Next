@@ -15,8 +15,11 @@ import com.sekusarisu.yanami.domain.repository.ServerRepository
 import com.sekusarisu.yanami.domain.repository.SessionExpiredException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import java.util.Locale
 
 /**
  * 服务端实例仓库实现
@@ -37,6 +40,20 @@ class ServerRepositoryImpl(
 
     companion object {
         private const val TAG = "ServerRepo"
+
+        /**
+         * Room serializes individual statements, but several repository operations are
+         * read/decide/write sequences. Keep those sequences process-wide so a stale profile
+         * snapshot cannot overwrite a newer session token.
+         */
+        private val profileMutationMutex = Mutex()
+
+        /**
+         * Avoid duplicate validation/login attempts for the same process. Mutations may still
+         * happen while a network request is in flight; every request therefore performs a
+         * security-identity check both before and after the request.
+         */
+        private val profileAuthenticationMutex = Mutex()
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -62,22 +79,42 @@ class ServerRepositoryImpl(
     }
 
     override suspend fun add(instance: ServerInstance): Long {
-        val entity = instance.toEntity()
-        return dao.insert(entity)
+        return profileMutationMutex.withLock {
+            // A session token may only enter storage through a server-bound login result.
+            // Force an auto-generated ID so add() cannot replace an existing profile row.
+            dao.insert(instance.copy(id = 0L, sessionToken = null).toEntity())
+        }
     }
 
-    override suspend fun update(instance: ServerInstance) {
-        dao.update(instance.toEntity())
+    override suspend fun update(
+            instance: ServerInstance,
+            expectedAuthentication: ServerInstance
+    ) {
+        profileMutationMutex.withLock {
+            val stored = dao.getById(instance.id)?.toDomain() ?: return@withLock
+            requireUnchangedProfile(
+                    canApplyOrdinaryServerUpdate(
+                            stored = stored,
+                            requested = instance,
+                            expectedAuthentication = expectedAuthentication
+                    )
+            )
+            dao.update(mergeOrdinaryServerUpdate(stored, instance).toEntity())
+        }
     }
 
     override suspend fun remove(id: Long) {
-        val entity = dao.getById(id) ?: return
-        dao.delete(entity)
+        profileMutationMutex.withLock {
+            val entity = dao.getById(id) ?: return@withLock
+            dao.delete(entity)
+        }
     }
 
     override suspend fun setActive(id: Long) {
-        dao.deactivateAll()
-        dao.activateById(id)
+        profileMutationMutex.withLock {
+            dao.deactivateAll()
+            dao.activateById(id)
+        }
     }
 
     override suspend fun testConnection(
@@ -140,66 +177,147 @@ class ServerRepositoryImpl(
         return version
     }
 
-    override suspend fun login(instance: ServerInstance, twoFaCode: String?): Boolean {
-        // GUEST 模式无需登录。
-        if (instance.authType == AuthType.GUEST) {
-            Log.d(TAG, "Guest access selected for server ${instance.name}")
-            return true
-        }
+    override suspend fun login(instance: ServerInstance, twoFaCode: String?): Boolean =
+            profileAuthenticationMutex.withLock {
+                val storedAtStart =
+                        profileMutationMutex.withLock {
+                            val stored = requireCurrentProfile(instance.id)
+                            val matches =
+                                    if (instance.authType == AuthType.PASSWORD) {
+                                        // A user-triggered re-login may intentionally replace the
+                                        // username/password, but never the target origin or headers.
+                                        sameServerAuthenticationOrigin(stored, instance)
+                                    } else {
+                                        sameServerAuthenticationConfiguration(stored, instance)
+                                    }
+                            requireUnchangedProfile(matches)
+                            stored
+                        }
 
-        // API_KEY 模式使用服务器快照内的 key，无需登录。
-        if (instance.authType == AuthType.API_KEY) {
-            serverBoundStoredCredential(instance)
-                    ?: throw Exception("API Key is missing")
-            Log.d(TAG, "API Key access selected for server ${instance.name}")
-            return true
-        }
+                when (instance.authType) {
+                    AuthType.GUEST -> Unit
+                    AuthType.API_KEY -> {
+                        serverBoundStoredCredential(storedAtStart)
+                                ?: throw SessionExpiredException("API Key is missing")
+                    }
+                    AuthType.PASSWORD ->
+                            loginWithExplicitPassword(
+                                    storedAtStart = storedAtStart,
+                                    loginTarget = instance,
+                                    twoFaCode = twoFaCode
+                            )
+                }
+                true
+            }
 
-        loginWithPassword(instance, twoFaCode)
-        return true
-    }
-
-    override suspend fun ensureSessionToken(instance: ServerInstance): String {
-        // GUEST 模式：直接返回空 token
-        if (instance.authType == AuthType.GUEST) {
-            return serverBoundStoredCredential(instance) ?: ""
-        }
-
-        // API_KEY 模式：直接使用 API Key，无需恢复/验证 session
-        if (instance.authType == AuthType.API_KEY) {
-            val apiKey = serverBoundStoredCredential(instance)
-                    ?: throw SessionExpiredException("API Key is missing")
-            return apiKey
-        }
-
-        val cachedToken = serverBoundStoredCredential(instance)
-        if (!cachedToken.isNullOrBlank() && restoreSession(instance)) {
-            // Return the credential from this immutable ServerInstance snapshot.
-            return cachedToken
-        }
-
-        // A fresh login returns its token directly; there is no process-wide credential cache.
-        return loginWithPassword(instance, twoFaCode = null)
-    }
-
-    private suspend fun loginWithPassword(
+    override suspend fun ensureSessionToken(
             instance: ServerInstance,
             twoFaCode: String?
+    ): String =
+            profileAuthenticationMutex.withLock {
+                // Bind the operation to the latest stored token while requiring the caller's
+                // origin, headers and credentials to still describe the same profile.
+                var launchSnapshot = resolveCurrentAuthenticationSnapshot(instance)
+
+                when (launchSnapshot.authType) {
+                    AuthType.GUEST -> return@withLock ""
+                    AuthType.API_KEY ->
+                            return@withLock serverBoundStoredCredential(launchSnapshot)
+                                    ?: throw SessionExpiredException("API Key is missing")
+                    AuthType.PASSWORD -> Unit
+                }
+
+                val cachedToken = launchSnapshot.sessionToken?.takeIf { it.isNotBlank() }
+                if (cachedToken != null) {
+                    if (validateStoredPasswordSession(launchSnapshot, cachedToken)) {
+                        return@withLock cachedToken
+                    }
+                    // validateStoredPasswordSession cleared exactly the token it validated.
+                    launchSnapshot = launchSnapshot.copy(sessionToken = null)
+                }
+
+                loginWithStoredPassword(launchSnapshot, twoFaCode)
+            }
+
+    override suspend fun restoreSession(instance: ServerInstance): Boolean =
+            profileAuthenticationMutex.withLock {
+                val launchSnapshot = resolveCurrentAuthenticationSnapshot(instance)
+                when (launchSnapshot.authType) {
+                    AuthType.GUEST -> true
+                    AuthType.API_KEY -> !launchSnapshot.apiKey.isNullOrBlank()
+                    AuthType.PASSWORD -> {
+                        val token = launchSnapshot.sessionToken?.takeIf { it.isNotBlank() }
+                                ?: return@withLock false
+                        validateStoredPasswordSession(launchSnapshot, token)
+                    }
+                }
+            }
+
+    /** Resolve a fresh DB snapshot without ever pairing stored credentials with a caller URL. */
+    private suspend fun resolveCurrentAuthenticationSnapshot(
+            requested: ServerInstance
+    ): ServerInstance {
+        return profileMutationMutex.withLock {
+            val stored = requireCurrentProfile(requested.id)
+            requireUnchangedProfile(sameServerAuthenticationConfiguration(stored, requested))
+            stored
+        }
+    }
+
+    private suspend fun validateStoredPasswordSession(
+            launchSnapshot: ServerInstance,
+            cachedToken: String
+    ): Boolean {
+        val isValid =
+                authService.validateSession(
+                        launchSnapshot.baseUrl,
+                        cachedToken,
+                        launchSnapshot.customHeaders
+                )
+
+        profileMutationMutex.withLock {
+            val current = requireCurrentProfile(launchSnapshot.id)
+            // A failed request may only clear the exact token and security identity it used.
+            requireUnchangedProfile(sameServerAuthenticationState(launchSnapshot, current))
+            if (!isValid) {
+                dao.updateSessionToken(launchSnapshot.id, null)
+            }
+        }
+        return isValid
+    }
+
+    /** Automatic login uses only the already verified, current stored credential snapshot. */
+    private suspend fun loginWithStoredPassword(
+            launchSnapshot: ServerInstance,
+            twoFaCode: String?
     ): String {
+        profileMutationMutex.withLock {
+            val current = requireCurrentProfile(launchSnapshot.id)
+            requireUnchangedProfile(sameServerAuthenticationState(launchSnapshot, current))
+        }
+
         val loginResult =
                 authService.login(
-                        instance.baseUrl,
-                        instance.username,
-                        instance.password,
-                        twoFaCode,
-                        instance.customHeaders
+                        launchSnapshot.baseUrl,
+                        launchSnapshot.username,
+                        launchSnapshot.password,
+                        // This value belongs only to this mutex-serialized refresh attempt. The
+                        // successful persistence path stores the returned token, never the code.
+                        twoFaCode = twoFaCode,
+                        customHeaders = launchSnapshot.customHeaders
                 )
 
         return when (loginResult) {
             is LoginResult.Success -> {
                 val token = loginResult.sessionToken
-                dao.updateSessionToken(instance.id, cryptoManager.encrypt(token))
-                Log.d(TAG, "Login successful for server ${instance.name}")
+                profileMutationMutex.withLock {
+                    val current = requireCurrentProfile(launchSnapshot.id)
+                    requireUnchangedProfile(
+                            sameServerAuthenticationState(launchSnapshot, current)
+                    )
+                    dao.updateSessionToken(launchSnapshot.id, cryptoManager.encrypt(token))
+                }
+                Log.d(TAG, "Automatic login succeeded")
                 token
             }
             is LoginResult.Requires2FA -> throw Requires2FAException(loginResult.message)
@@ -207,67 +325,75 @@ class ServerRepositoryImpl(
         }
     }
 
-    override suspend fun restoreSession(instance: ServerInstance): Boolean {
-        // GUEST 模式无需恢复会话。
-        if (instance.authType == AuthType.GUEST) {
-            Log.d(TAG, "Guest session restored for server ${instance.name}")
-            return true
-        }
-
-        // API_KEY 模式：直接从存储的 apiKey 设置 session
-        if (instance.authType == AuthType.API_KEY) {
-            val apiKey = instance.apiKey
-            if (apiKey.isNullOrBlank()) {
-                Log.d(TAG, "No API Key for server ${instance.name}")
-                return false
-            }
-            Log.d(TAG, "API Key session restored for server ${instance.name}")
-            return true
-        }
-
-        val cachedToken = instance.sessionToken
-        if (cachedToken.isNullOrBlank()) {
-            Log.d(TAG, "No cached session_token for server ${instance.name}")
-            return false
-        }
-
-        // 验证 token 有效性
-        val isValid =
-                authService.validateSession(
-                        instance.baseUrl,
-                        cachedToken,
-                        instance.customHeaders
+    /**
+     * A successful user re-login replaces username/password and token in one Room UPDATE. The
+     * request is rejected if any security-bearing stored state changed while it was in flight.
+     */
+    private suspend fun loginWithExplicitPassword(
+            storedAtStart: ServerInstance,
+            loginTarget: ServerInstance,
+            twoFaCode: String?
+    ) {
+        val loginResult =
+                authService.login(
+                        loginTarget.baseUrl,
+                        loginTarget.username,
+                        loginTarget.password,
+                        twoFaCode,
+                        loginTarget.customHeaders
                 )
-        if (isValid) {
-            Log.d(TAG, "Session restored for server ${instance.name}")
-            return true
+
+        when (loginResult) {
+            is LoginResult.Success -> {
+                profileMutationMutex.withLock {
+                    val current = requireCurrentProfile(storedAtStart.id)
+                    requireUnchangedProfile(
+                            sameServerAuthenticationState(storedAtStart, current) &&
+                                    sameServerAuthenticationOrigin(current, loginTarget)
+                    )
+                    dao.update(
+                            mergeSuccessfulExplicitLogin(
+                                            current,
+                                            loginTarget,
+                                            loginResult.sessionToken
+                                    )
+                                    .toEntity()
+                    )
+                }
+                Log.d(TAG, "Explicit login succeeded")
+            }
+            is LoginResult.Requires2FA -> throw Requires2FAException(loginResult.message)
+            is LoginResult.Error -> throw SessionExpiredException(loginResult.message)
         }
-
-        // Token 已失效，清除缓存
-        Log.d(TAG, "Cached session_token expired for server ${instance.name}")
-        dao.updateSessionToken(instance.id, null)
-        return false
     }
 
-    override suspend fun updateRequires2fa(id: Long, requires2fa: Boolean) {
-        val entity = dao.getById(id) ?: return
-        dao.update(entity.copy(requires2fa = requires2fa))
-    }
-
-    override suspend fun updateAuthInfo(
-            id: Long,
-            username: String,
-            password: String,
+    override suspend fun updateRequires2fa(
+            expectedAuthentication: ServerInstance,
             requires2fa: Boolean
     ) {
-        val entity = dao.getById(id) ?: return
-        dao.update(
-                entity.copy(
-                        encryptedUsername = cryptoManager.encrypt(username),
-                        encryptedPassword = cryptoManager.encrypt(password),
-                        requires2fa = requires2fa
-                )
-        )
+        profileMutationMutex.withLock {
+            val entity =
+                    dao.getById(expectedAuthentication.id)
+                            ?: throw SessionExpiredException("Server profile no longer exists")
+            requireUnchangedProfile(
+                    canUpdateRequiresTwoFactorHint(
+                            stored = entity.toDomain(),
+                            expectedAuthentication = expectedAuthentication
+                    )
+            )
+            dao.update(entity.copy(requires2fa = requires2fa))
+        }
+    }
+
+    private suspend fun requireCurrentProfile(id: Long): ServerInstance {
+        return dao.getById(id)?.toDomain()
+                ?: throw SessionExpiredException("Server profile no longer exists")
+    }
+
+    private fun requireUnchangedProfile(condition: Boolean) {
+        if (!condition) {
+            throw SessionExpiredException("Server settings changed; retry with the latest profile")
+        }
     }
 
     // ─── Entity ↔ Domain 转换 ───
@@ -390,4 +516,140 @@ internal fun serverBoundStoredCredential(instance: ServerInstance): String? {
         AuthType.API_KEY -> instance.apiKey?.takeIf { it.isNotBlank() }
         AuthType.PASSWORD -> instance.sessionToken?.takeIf { it.isNotBlank() }
     }
+}
+
+/** Security-bearing request target, excluding credentials that an explicit re-login may replace. */
+private data class ServerAuthenticationOrigin(
+        val id: Long,
+        val baseUrl: String,
+        val authType: AuthType,
+        val customHeaders: List<Pair<String, String>>
+)
+
+/** Credentials that are meaningful for the selected authentication mode only. */
+private sealed interface ServerAuthenticationCredential {
+    data object Guest : ServerAuthenticationCredential
+
+    data class ApiKey(val value: String?) : ServerAuthenticationCredential
+
+    data class Password(val username: String, val password: String) :
+            ServerAuthenticationCredential
+}
+
+private fun ServerInstance.authenticationOrigin(): ServerAuthenticationOrigin {
+    val canonicalHeaders =
+            customHeaders
+                    .map { header ->
+                        header.name.lowercase(Locale.ROOT) to header.value
+                    }
+                    .sortedWith(
+                            compareBy<Pair<String, String>> { it.first }
+                                    .thenBy { it.second }
+                    )
+    return ServerAuthenticationOrigin(
+            id = id,
+            baseUrl = baseUrl.trimEnd('/'),
+            authType = authType,
+            customHeaders = canonicalHeaders
+    )
+}
+
+private fun ServerInstance.authenticationCredential(): ServerAuthenticationCredential {
+    return when (authType) {
+        AuthType.GUEST -> ServerAuthenticationCredential.Guest
+        AuthType.API_KEY -> ServerAuthenticationCredential.ApiKey(apiKey)
+        AuthType.PASSWORD -> ServerAuthenticationCredential.Password(username, password)
+    }
+}
+
+/**
+ * Whether two snapshots can safely share an authentication result. Display name, active state,
+ * creation time and the 2FA UI hint are intentionally not security identities.
+ */
+internal fun sameServerAuthenticationConfiguration(
+        first: ServerInstance,
+        second: ServerInstance
+): Boolean {
+    return first.authenticationOrigin() == second.authenticationOrigin() &&
+            first.authenticationCredential() == second.authenticationCredential()
+}
+
+/**
+ * Explicit password login may replace username/password, but it must stay on the same profile,
+ * URL, auth mode and custom-header context.
+ */
+internal fun sameServerAuthenticationOrigin(
+        first: ServerInstance,
+        second: ServerInstance
+): Boolean = first.authenticationOrigin() == second.authenticationOrigin()
+
+/** Network post-flight guard, including the exact password-session token used by the request. */
+internal fun sameServerAuthenticationState(
+        first: ServerInstance,
+        second: ServerInstance
+): Boolean {
+    return sameServerAuthenticationConfiguration(first, second) &&
+            (first.authType != AuthType.PASSWORD || first.sessionToken == second.sessionToken)
+}
+
+/** A capability hint may cross a token refresh, but never an authentication-identity change. */
+internal fun canUpdateRequiresTwoFactorHint(
+        stored: ServerInstance,
+        expectedAuthentication: ServerInstance
+): Boolean = sameServerAuthenticationConfiguration(stored, expectedAuthentication)
+
+/**
+ * Optimistic-concurrency rule for an ordinary edit. Metadata-only edits are allowed to cross a
+ * token refresh because they retain the DB token. An authentication-changing edit must still be
+ * based on the exact stored security state, including its token.
+ */
+internal fun canApplyOrdinaryServerUpdate(
+        stored: ServerInstance,
+        requested: ServerInstance,
+        expectedAuthentication: ServerInstance
+): Boolean {
+    if (stored.id != requested.id || stored.id != expectedAuthentication.id) return false
+    return sameServerAuthenticationConfiguration(stored, requested) ||
+            sameServerAuthenticationState(stored, expectedAuthentication)
+}
+
+/**
+ * Ordinary profile edits never trust the caller's token snapshot. They preserve the latest
+ * stored token only when every authentication-bearing setting is unchanged.
+ */
+internal fun mergeOrdinaryServerUpdate(
+        stored: ServerInstance,
+        requested: ServerInstance
+): ServerInstance {
+    require(stored.id == requested.id) { "Cannot merge different server profiles" }
+    val retainedToken =
+            if (requested.authType == AuthType.PASSWORD &&
+                            sameServerAuthenticationConfiguration(stored, requested)
+            ) {
+                stored.sessionToken
+            } else {
+                null
+            }
+    return requested.copy(sessionToken = retainedToken)
+}
+
+/** Builds the single-row atomic mutation performed after a user-triggered password login. */
+internal fun mergeSuccessfulExplicitLogin(
+        storedAtCompletion: ServerInstance,
+        loginTarget: ServerInstance,
+        sessionToken: String
+): ServerInstance {
+    require(storedAtCompletion.authType == AuthType.PASSWORD) {
+        "Explicit password login requires password authentication"
+    }
+    require(sameServerAuthenticationOrigin(storedAtCompletion, loginTarget)) {
+        "Explicit login target changed"
+    }
+    require(sessionToken.isNotBlank()) { "Session token must not be blank" }
+    return storedAtCompletion.copy(
+            username = loginTarget.username,
+            password = loginTarget.password,
+            sessionToken = sessionToken,
+            requires2fa = loginTarget.requires2fa
+    )
 }

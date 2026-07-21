@@ -100,7 +100,7 @@ class ConfigBackupManager(
                                             existing.customHeaders
                                         }
                         )
-                serverRepository.update(updated)
+                serverRepository.update(updated, expectedAuthentication = existing)
                 existingServersByKey[updated.mergeKey()] = updated
                 updatedServerCount++
                 if (backupServer.isActive) {
