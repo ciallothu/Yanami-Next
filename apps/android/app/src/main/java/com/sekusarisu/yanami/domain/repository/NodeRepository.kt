@@ -5,6 +5,7 @@ import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.LoadRecord
 import com.sekusarisu.yanami.domain.model.Node
+import com.sekusarisu.yanami.domain.model.NodePingHistory
 import com.sekusarisu.yanami.domain.model.PingRecord
 import com.sekusarisu.yanami.domain.model.PingTask
 import kotlinx.coroutines.flow.Flow
@@ -41,6 +42,16 @@ interface NodeRepository {
                 authType: AuthType,
                 customHeaders: List<CustomHeader>
         ): List<LoadRecord>
+
+        /** 获取该节点绑定的 Ping 任务及指定时间窗的真实延迟/丢包记录。 */
+        suspend fun getNodePingHistory(
+                baseUrl: String,
+                sessionToken: String,
+                uuid: String,
+                hours: Int,
+                authType: AuthType,
+                customHeaders: List<CustomHeader>
+        ): NodePingHistory
 
         /**
          * 通过 WebSocket RPC 实时观测节点状态变化

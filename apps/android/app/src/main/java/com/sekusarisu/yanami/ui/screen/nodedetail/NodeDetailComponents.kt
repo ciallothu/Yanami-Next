@@ -60,6 +60,14 @@ internal fun NodeDetailContent(
             item { Spacer(modifier = Modifier.height(4.dp)) }
             item { ServerInfoCard(node, maskIpAddresses) }
             item {
+                Latency24hSummaryCard(
+                        tasks = state.latency24hTasks,
+                        samplesByTaskId = state.latency24hSamplesByTaskId,
+                        isLoading = state.isLatency24hLoading,
+                        hasError = state.hasLatency24hError
+                )
+            }
+            item {
                 ChartSectionHeader(
                         title = stringResource(R.string.node_detail_load_chart),
                         selectedHours = state.selectedLoadHours,
@@ -150,9 +158,9 @@ internal fun NodeDetailContent(
                         WideChartRow(
                                 first = {
                                     NetworkChartCard(
-                                            title = stringResource(R.string.node_net_interval_traffic),
-                                            netInData = loadChartData.trafficDownSeries,
-                                            netOutData = loadChartData.trafficUpSeries,
+                                            title = stringResource(R.string.node_net_sample_usage),
+                                            netInData = loadChartData.sampleUsageDownSeries,
+                                            netOutData = loadChartData.sampleUsageUpSeries,
                                             times = loadChartData.timeLabels,
                                             chartAnimationEnabled = chartAnimationEnabled,
                                             showAsSpeed = false
@@ -174,9 +182,9 @@ internal fun NodeDetailContent(
                     item {
                         ChartSectionSurface {
                             NetworkChartCard(
-                                    title = stringResource(R.string.node_net_interval_traffic),
-                                    netInData = loadChartData.trafficDownSeries,
-                                    netOutData = loadChartData.trafficUpSeries,
+                                    title = stringResource(R.string.node_net_sample_usage),
+                                    netInData = loadChartData.sampleUsageDownSeries,
+                                    netOutData = loadChartData.sampleUsageUpSeries,
                                     times = loadChartData.timeLabels,
                                     chartAnimationEnabled = chartAnimationEnabled,
                                     showAsSpeed = false
@@ -281,7 +289,7 @@ internal fun NodeDetailContent(
                 state.pingTasks.forEach { task ->
                     val taskId = task.id
                     val records = state.pingChartByTaskId[taskId]
-                    if (records == null || records.values.isEmpty()) {
+                    if (records == null) {
                         item(key = "ping_empty_$taskId") {
                             ChartSectionSurface {
                                 Box(
@@ -304,6 +312,11 @@ internal fun NodeDetailContent(
                                         task = task,
                                         values = records.values,
                                         times = records.times,
+                                        segments = records.segments,
+                                        allTimes = records.allTimes,
+                                        packetLossXValues = records.packetLossXValues,
+                                        totalSamples = records.totalSamples,
+                                        packetLossSamples = records.packetLossSamples,
                                         chartAnimationEnabled = chartAnimationEnabled
                                 )
                             }

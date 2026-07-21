@@ -105,9 +105,9 @@
     <string name="node_collapse">折りたたむ</string>
     <string name="node_traffic_up">アップロード総通信量</string>
     <string name="node_traffic_down">ダウンロード総通信量</string>
-    <string name="node_net_speed">リアルタイム速度</string>
-    <string name="node_net_traffic">通信量</string>
-    <string name="node_net_interval_traffic">現在のトラフィック</string>
+    <string name="node_net_speed">リアルタイム通信量（速度）</string>
+    <string name="node_net_traffic">累積通信量</string>
+    <string name="node_net_sample_usage">サンプルごとの使用量</string>
     <string name="node_ipv4">IPv4</string>
     <string name="node_ipv6">IPv6</string>
     <string name="settings_mask_ip">IP アドレスを隠す</string>
@@ -244,9 +244,9 @@
     <string name="node_detail_cpu_usage">CPU使用率</string>
     <string name="node_detail_ram">メモリ</string>
     <string name="node_detail_disk">ディスク</string>
-    <string name="node_detail_net_speed">ネットワーク速度</string>
-    <string name="node_detail_net_traffic">通信量</string>
-    <string name="node_detail_traffic_limit">通信量しきい値</string>
+    <string name="node_detail_net_speed">リアルタイム通信量</string>
+    <string name="node_detail_net_traffic">累積通信量</string>
+    <string name="node_detail_traffic_limit">使用量 / 上限</string>
     <string name="node_detail_connections">接続数</string>
     <string name="node_detail_process">プロセス数</string>
     <string name="node_detail_load">負荷</string>
@@ -260,6 +260,29 @@
     <string name="node_detail_load_failed">読み込み失敗: %s</string>
     <string name="node_detail_records_failed">記録取得失敗: %s</string>
     <string name="node_detail_realtime">リアルタイム</string>
+    <string name="node_detail_latency_summary_24h">遅延統計（24時間）</string>
+    <string name="node_detail_server_calculated">サーバー集計</string>
+    <string name="node_detail_records_fallback">実記録から代替集計</string>
+    <string name="node_detail_latency_per_task">タスク別</string>
+    <string name="node_detail_latency_unavailable">遅延統計を一時的に取得できません</string>
+    <string name="node_detail_latency_no_tasks">このノードに遅延監視タスクが紐付いていません</string>
+    <string name="node_detail_latency_no_samples">過去24時間に計測サンプルがありません</string>
+    <plurals name="node_detail_latency_samples">
+        <item quantity="other">%1$d 回の計測</item>
+    </plurals>
+    <plurals name="node_detail_latency_recent_samples">
+        <item quantity="other">直近 %1$d 件の実サンプル</item>
+    </plurals>
+    <string name="node_detail_latency_sample_legend">棒の高さ＝遅延 · 赤＝ロス</string>
+    <string name="node_detail_latency_average">平均遅延</string>
+    <string name="node_detail_latency_latest_value">最新：%1$s</string>
+    <string name="node_detail_packet_loss">パケットロス</string>
+    <string name="node_detail_latency_fluctuation_value">変動：%1$s</string>
+    <string name="node_detail_latency_min">最小</string>
+    <string name="node_detail_latency_max">最大</string>
+    <string name="node_detail_latency_accessibility">%1$s、平均遅延 %2$s、最新遅延 %3$s、パケットロス %4$s、%5$s、最小 %6$s、P50 %7$s、P99 %8$s、最大 %9$s、変動 %10$s</string>
+    <string name="node_detail_all_samples_lost">選択期間の計測はすべてパケットロスでした</string>
+    <string name="node_detail_packet_loss_marker">赤い点は実際のパケットロスを示します</string>
 
     <!-- 設定 -->
     <string name="settings_title">設定</string>

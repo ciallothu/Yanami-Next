@@ -28,9 +28,13 @@ final class AppStore: ObservableObject {
     private var nodeRequestSequence: UInt64 = 0
     private var lastAppliedPresenceSequence: UInt64 = 0
     private var nodeDetailGeneration: UInt64 = 0
+    private var nodeDetailPingRequestGeneration: UInt64 = 0
+    private var lastNodeDetailPingRefreshAt: Date?
     private var credentialGeneration: UInt64 = 0
     private var biometricLockAuthorizationGeneration: UInt64 = 0
     private var pendingTwoFactorChallenge: PendingTwoFactorChallenge?
+
+    private static let nodeDetailPingRefreshInterval: TimeInterval = 30
 
     var isCredentialAccessUnlocked: Bool {
         credentialAccessPhase == .unlocked
@@ -75,12 +79,6 @@ final class AppStore: ObservableObject {
     var offlineCount: Int { nodes.count - onlineCount }
     var totalNetIn: Int64 { saturatingNonNegativeSum(nodes.filter(\.isOnline).map(\.netIn)) }
     var totalNetOut: Int64 { saturatingNonNegativeSum(nodes.filter(\.isOnline).map(\.netOut)) }
-    var totalTrafficUp: Int64 {
-        saturatingNonNegativeSum(nodes.filter(\.isOnline).map(\.trafficUp))
-    }
-    var totalTrafficDown: Int64 {
-        saturatingNonNegativeSum(nodes.filter(\.isOnline).map(\.trafficDown))
-    }
     private var allNodeTrafficUsage: NodeTrafficUsageTotals {
         aggregateNodeTrafficUsage(nodes.map { (upload: $0.netTotalUp, download: $0.netTotalDown) })
     }
@@ -562,6 +560,7 @@ final class AppStore: ObservableObject {
             nodeDetail.node = nil
             nodeDetail.error = "UUID is required"
             nodeDetail.isLoading = false
+            nodeDetail.isLoadingPing24Hours = false
             return
         }
 
@@ -570,6 +569,7 @@ final class AppStore: ObservableObject {
             nodeDetail.node = nil
             nodeDetail.error = "No active server"
             nodeDetail.isLoading = false
+            nodeDetail.isLoadingPing24Hours = false
             return
         }
 
@@ -578,11 +578,15 @@ final class AppStore: ObservableObject {
         selectedNodeId = uuid
         nodeDetail.isLoading = true
         nodeDetail.error = nil
+        nodeDetail.ping24HourError = nil
+        nodeDetail.isLoadingPing24Hours = changedNode || nodeDetail.ping24HourTasks.isEmpty
         if changedNode {
             nodeDetail.node = nil
             nodeDetail.loadRecords = []
             nodeDetail.pingRecords = []
             nodeDetail.pingTasks = []
+            nodeDetail.ping24HourRecords = []
+            nodeDetail.ping24HourTasks = []
         } else if !preserveRecords {
             nodeDetail.loadRecords = []
             nodeDetail.pingRecords = []
@@ -643,27 +647,105 @@ final class AppStore: ObservableObject {
                 }
             }
 
-            do {
-                let ping = try await performAuthenticatedRequest(for: server) { client, token in
-                    try await client.getPingRecords(
-                        token: token,
-                        uuid: uuid,
-                        hours: request.pingHours
-                    )
-                }
-                guard isCurrentDetailRequest(request) else { return }
-                nodeDetail.pingTasks = ping.0
-                nodeDetail.pingRecords = ping.1
-            } catch {
-                guard isCurrentDetailRequest(request) else { return }
-                let current = nodeDetail.error ?? ""
-                nodeDetail.error = current.isEmpty ? "Ping records: \(error.localizedDescription)" : "\(current)\nPing records: \(error.localizedDescription)"
-            }
+            await refreshPingRecords(request: request, server: server)
         } catch {
             guard isCurrentDetailRequest(request) else { return }
             nodeDetail.isLoading = false
+            nodeDetail.isLoadingPing24Hours = false
             nodeDetail.error = error.localizedDescription
         }
+    }
+
+    /// Refreshes the fixed 24-hour summary and the interactive Ping range together. A separate
+    /// generation prevents an older periodic request from overwriting a newer pull-to-refresh or
+    /// range change, while the node-detail identity guards server/node/range transitions.
+    private func refreshPingRecords(
+        request: NodeDetailRequestIdentity,
+        server: ServerProfile
+    ) async {
+        nodeDetailPingRequestGeneration &+= 1
+        let pingRequestGeneration = nodeDetailPingRequestGeneration
+        lastNodeDetailPingRefreshAt = Date()
+
+        func isCurrentPingRequest() -> Bool {
+            pingRequestGeneration == nodeDetailPingRequestGeneration &&
+                isCurrentDetailRequest(request)
+        }
+
+        do {
+            let ping24Hours = try await performAuthenticatedRequest(for: server) { client, token in
+                try await client.getPingRecords(
+                    token: token,
+                    uuid: request.nodeUUID,
+                    hours: 24
+                )
+            }
+            guard isCurrentPingRequest() else { return }
+            nodeDetail.ping24HourTasks = ping24Hours.0
+            nodeDetail.ping24HourRecords = ping24Hours.1
+            nodeDetail.ping24HourError = nil
+            nodeDetail.isLoadingPing24Hours = false
+            if request.pingHours == 24 {
+                nodeDetail.pingTasks = ping24Hours.0
+                nodeDetail.pingRecords = ping24Hours.1
+            }
+        } catch {
+            guard isCurrentPingRequest() else { return }
+            nodeDetail.isLoadingPing24Hours = false
+            nodeDetail.ping24HourError = error.localizedDescription
+        }
+
+        guard request.pingHours != 24, isCurrentPingRequest() else { return }
+        do {
+            let ping = try await performAuthenticatedRequest(for: server) { client, token in
+                try await client.getPingRecords(
+                    token: token,
+                    uuid: request.nodeUUID,
+                    hours: request.pingHours
+                )
+            }
+            guard isCurrentPingRequest() else { return }
+            nodeDetail.pingTasks = ping.0
+            nodeDetail.pingRecords = ping.1
+            updateNodeDetailPingError(nil)
+        } catch {
+            guard isCurrentPingRequest() else { return }
+            updateNodeDetailPingError(error.localizedDescription)
+        }
+    }
+
+    private func updateNodeDetailPingError(_ message: String?) {
+        var lines = (nodeDetail.error ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .filter { !$0.hasPrefix("Ping records:") }
+        if let message, !message.isEmpty {
+            lines.append("Ping records: \(String(message.prefix(512)))")
+        }
+        nodeDetail.error = lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    func refreshNodeDetailPingRecordsIfDue() async {
+        guard isCredentialAccessUnlocked,
+              !nodeDetail.isLoading,
+              let server = activeServer,
+              let selectedNodeId else { return }
+        let now = Date()
+        if !shouldRefreshNodePingHistory(
+            lastRefreshAt: lastNodeDetailPingRefreshAt,
+            now: now,
+            minimumInterval: Self.nodeDetailPingRefreshInterval
+        ) {
+            return
+        }
+        let request = NodeDetailRequestIdentity(
+            generation: nodeDetailGeneration,
+            serverID: server.id,
+            nodeUUID: selectedNodeId,
+            loadHours: nodeDetail.loadHours,
+            pingHours: nodeDetail.pingHours
+        )
+        await refreshPingRecords(request: request, server: server)
     }
 
     func setLoadHours(_ hours: Int) {
@@ -1158,6 +1240,8 @@ final class AppStore: ObservableObject {
         nodeRequestSequence &+= 1
         lastAppliedPresenceSequence = nodeRequestSequence
         nodeDetailGeneration &+= 1
+        nodeDetailPingRequestGeneration &+= 1
+        lastNodeDetailPingRefreshAt = nil
         isLoadingNodes = false
         isRefreshingNodes = false
         nodes = []

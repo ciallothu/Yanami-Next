@@ -341,8 +341,8 @@ private fun NodeListContent(
                         totalNetOut = state.totalNetOut,
                         totalTrafficUp = state.totalTrafficUp,
                         totalTrafficDown = state.totalTrafficDown,
-                        currentTrafficUp = state.currentTrafficUp,
-                        currentTrafficDown = state.currentTrafficDown,
+                        sampleUsageUp = state.sampleUsageUp,
+                        sampleUsageDown = state.sampleUsageDown,
                         statusFilter = state.statusFilter,
                         onStatusFilterSelected = {
                             onEvent(NodeListContract.Event.StatusFilterSelected(it))

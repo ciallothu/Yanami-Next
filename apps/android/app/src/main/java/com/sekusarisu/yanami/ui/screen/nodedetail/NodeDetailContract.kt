@@ -16,8 +16,8 @@ object NodeDetailContract {
             val ramSeries: List<Double> = emptyList(),
             val netInSeries: List<Double> = emptyList(),
             val netOutSeries: List<Double> = emptyList(),
-            val trafficUpSeries: List<Double> = emptyList(),
-            val trafficDownSeries: List<Double> = emptyList(),
+            val sampleUsageUpSeries: List<Double> = emptyList(),
+            val sampleUsageDownSeries: List<Double> = emptyList(),
             val tcpSeries: List<Int> = emptyList(),
             val udpSeries: List<Int> = emptyList(),
             val processSeries: List<Double> = emptyList()
@@ -25,7 +25,17 @@ object NodeDetailContract {
 
     data class PingChartData(
             val values: List<Double> = emptyList(),
-            val times: List<String> = emptyList()
+            val times: List<String> = emptyList(),
+            val segments: List<PingChartSegment> = emptyList(),
+            val allTimes: List<String> = emptyList(),
+            val packetLossXValues: List<Double> = emptyList(),
+            val totalSamples: Int = 0,
+            val packetLossSamples: Int = 0
+    )
+
+    data class PingChartSegment(
+            val xValues: List<Double> = emptyList(),
+            val values: List<Double> = emptyList()
     )
 
     data class State(
@@ -35,6 +45,10 @@ object NodeDetailContract {
             val realtimeLoadChartData: LoadChartData = LoadChartData(),
             val pingTasks: List<PingTask> = emptyList(),
             val pingChartByTaskId: Map<Int, PingChartData> = emptyMap(),
+            val latency24hTasks: List<PingTask> = emptyList(),
+            val latency24hSamplesByTaskId: Map<Int, List<Double>> = emptyMap(),
+            val isLatency24hLoading: Boolean = true,
+            val hasLatency24hError: Boolean = false,
             val selectedLoadHours: Int = 0,
             val selectedPingHours: Int = 1,
             val isLoadRecordsLoading: Boolean = false,

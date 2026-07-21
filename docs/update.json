@@ -1,6 +1,6 @@
 {
-    "versionCode": 10000,
+    "versionCode": 10001,
     "versionName": "0.1.0",
     "downloadUrl": "https://github.com/ciallothu/Yanami-Next/releases/latest",
-    "changelog": "Yanami Next 首个稳定版：重构终端交互，补全节点 IP、实时流量与累计流量用量，并完成安全加固。"
+    "changelog": "Yanami Next v0.1.0 修订版：修正 Traffic、Usage 与流量限额语义，新增真实 24 小时延时、丢包和波动统计，并保留终端与安全加固。"
 }

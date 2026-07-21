@@ -172,6 +172,54 @@ private fun PingChartSectionPreview() {
     }
 }
 
+@Preview(showBackground = true, widthDp = 320)
+@Composable
+private fun Latency24hSummaryPreview() {
+    MaterialTheme {
+        Latency24hSummaryCard(
+                tasks =
+                        listOf(
+                                PingTask(
+                                        id = 1,
+                                        name = "Tokyo ICMP",
+                                        interval = 60,
+                                        latest = 192.0,
+                                        min = 38.0,
+                                        max = 320.0,
+                                        avg = 116.0,
+                                        loss = 20.7,
+                                        p50 = 90.0,
+                                        p99 = 280.0,
+                                        total = 120,
+                                        jitterRatio = 2.8
+                                ),
+                                PingTask(
+                                        id = 2,
+                                        name = "Legacy TCP",
+                                        interval = 60,
+                                        latest = 72.0,
+                                        min = 52.0,
+                                        max = 120.0,
+                                        avg = 75.0,
+                                        loss = 0.0,
+                                        p50 = 70.0,
+                                        p99 = 110.0,
+                                        total = 3,
+                                        jitterRatio = 0.8,
+                                        statisticsAreServerCalculated = false
+                                )
+                        ),
+                samplesByTaskId =
+                        mapOf(
+                                1 to listOf(38.0, 80.0, -1.0, 192.0, 120.0, -1.0, 75.0),
+                                2 to listOf(52.0, 72.0, 101.0)
+                        ),
+                isLoading = false,
+                hasError = false
+        )
+    }
+}
+
 @Preview(showBackground = true)
 @Composable
 private fun ChartComponentsPreview() {

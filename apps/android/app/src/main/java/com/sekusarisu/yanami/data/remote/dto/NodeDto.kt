@@ -145,7 +145,8 @@ data class LoadRecordsResponseDto(
 data class PingRecordDto(
         @SerialName("task_id") val taskId: Int = 0,
         val time: String = "",
-        val value: Double = 0.0,
+        /** Null when the response omitted the measurement; never interpret absence as 0 ms. */
+        val value: Double? = null,
         val client: String = ""
 )
 
@@ -155,15 +156,17 @@ data class PingTaskDto(
         val interval: Int = 0,
         val name: String = "",
         val type: String = "",
-        val total: Int = 0,
-        val loss: Double = 0.0,
-        val latest: Double = 0.0,
-        val min: Double = 0.0,
-        val max: Double = 0.0,
-        val avg: Double = 0.0,
-        val p50: Double = 0.0,
-        val p99: Double = 0.0,
-        @SerialName("p99_p50_ratio") val p99p50Ratio: Double = 0.0
+        val total: Int? = null,
+        /** Null when an older or malformed server response does not provide a valid summary. */
+        val loss: Double? = null,
+        val latest: Double? = null,
+        val min: Double? = null,
+        val max: Double? = null,
+        val avg: Double? = null,
+        val p50: Double? = null,
+        val p99: Double? = null,
+        /** Optional on older Komari versions; absence must not be presented as zero fluctuation. */
+        @SerialName("p99_p50_ratio") val p99p50Ratio: Double? = null
 )
 
 @Serializable

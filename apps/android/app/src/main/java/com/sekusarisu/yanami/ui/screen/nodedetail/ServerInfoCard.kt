@@ -30,16 +30,19 @@ import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.Node
 import com.sekusarisu.yanami.domain.model.calculateTrafficLimitUsage
 import com.sekusarisu.yanami.ui.screen.nodelist.formatBytes
+import com.sekusarisu.yanami.ui.screen.nodelist.formatSpeed
 import com.sekusarisu.yanami.ui.screen.nodelist.formatUptime
 import com.sekusarisu.yanami.ui.screen.rememberAdaptiveLayoutInfo
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitDetail
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitTypeLabel
+import com.sekusarisu.yanami.ui.traffic.toTrafficUiValues
 import com.sekusarisu.yanami.ui.format.formatIpAddress
 
 @Composable
 internal fun ServerInfoCard(node: Node, maskIpAddresses: Boolean = false) {
     val adaptiveInfo = rememberAdaptiveLayoutInfo()
     val trafficLimitUsage = node.calculateTrafficLimitUsage()
+    val traffic = node.toTrafficUiValues()
     Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
@@ -113,12 +116,12 @@ internal fun ServerInfoCard(node: Node, maskIpAddresses: Boolean = false) {
                                 "%.2f / %.2f / %.2f".format(node.load1, node.load5, node.load15)
                         )
                         InfoRow(
-                                stringResource(R.string.node_detail_net_traffic),
-                                "↑ ${formatBytes(node.netTotalUp)}  ↓ ${formatBytes(node.netTotalDown)}"
+                                stringResource(R.string.node_detail_net_speed),
+                                "↑ ${formatSpeed(traffic.uploadRateBytesPerSecond)}  ↓ ${formatSpeed(traffic.downloadRateBytesPerSecond)}"
                         )
                         InfoRow(
-                                stringResource(R.string.node_net_interval_traffic),
-                                "↑ ${formatBytes(node.trafficUp)}  ↓ ${formatBytes(node.trafficDown)}"
+                                stringResource(R.string.node_detail_net_traffic),
+                                "↑ ${formatBytes(traffic.cumulativeUploadBytes)}  ↓ ${formatBytes(traffic.cumulativeDownloadBytes)}"
                         )
                         InfoRow(stringResource(R.string.node_detail_uptime), formatUptime(node.uptime))
                     }
@@ -245,12 +248,12 @@ internal fun ServerInfoCard(node: Node, maskIpAddresses: Boolean = false) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
                 Spacer(modifier = Modifier.height(8.dp))
                 InfoRow(
-                        stringResource(R.string.node_detail_net_traffic),
-                        "↑ ${formatBytes(node.netTotalUp)}  ↓ ${formatBytes(node.netTotalDown)}"
+                        stringResource(R.string.node_detail_net_speed),
+                        "↑ ${formatSpeed(traffic.uploadRateBytesPerSecond)}  ↓ ${formatSpeed(traffic.downloadRateBytesPerSecond)}"
                 )
                 InfoRow(
-                        stringResource(R.string.node_net_interval_traffic),
-                        "↑ ${formatBytes(node.trafficUp)}  ↓ ${formatBytes(node.trafficDown)}"
+                        stringResource(R.string.node_detail_net_traffic),
+                        "↑ ${formatBytes(traffic.cumulativeUploadBytes)}  ↓ ${formatBytes(traffic.cumulativeDownloadBytes)}"
                 )
                 InfoRow(
                         stringResource(R.string.node_detail_load),
@@ -303,12 +306,17 @@ internal fun UsageBar(label: String, percent: Double, detail: String) {
             Text(
                     text = label,
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(0.45f)
             )
             Text(
                     text = detail,
                     style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(0.55f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End
             )
         }
         Spacer(modifier = Modifier.height(2.dp))
