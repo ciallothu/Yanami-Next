@@ -151,22 +151,25 @@ internal fun OverviewCard(
                             label = stringResource(R.string.node_stat_total),
                             value = totalCount.toString(),
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            isSelected = false,
-                            onClick = soundClick { onStatusFilterSelected(NodeListContract.StatusFilter.ALL) }
+                            isSelected = statusFilter == NodeListContract.StatusFilter.ALL,
+                            onClick = soundClick { onStatusFilterSelected(NodeListContract.StatusFilter.ALL) },
+                            modifier = Modifier.weight(1f)
                     )
                     StatItem(
                             label = stringResource(R.string.node_stat_online),
                             value = onlineCount.toString(),
                             color = MaterialTheme.colorScheme.primary,
                             isSelected = statusFilter == NodeListContract.StatusFilter.ONLINE,
-                            onClick = soundClick { onStatusFilterSelected(NodeListContract.StatusFilter.ONLINE) }
+                            onClick = soundClick { onStatusFilterSelected(NodeListContract.StatusFilter.ONLINE) },
+                            modifier = Modifier.weight(1f)
                     )
                     StatItem(
                             label = stringResource(R.string.node_stat_offline),
                             value = offlineCount.toString(),
                             color = MaterialTheme.colorScheme.error,
                             isSelected = statusFilter == NodeListContract.StatusFilter.OFFLINE,
-                            onClick = soundClick { onStatusFilterSelected(NodeListContract.StatusFilter.OFFLINE) }
+                            onClick = soundClick { onStatusFilterSelected(NodeListContract.StatusFilter.OFFLINE) },
+                            modifier = Modifier.weight(1f)
                     )
                 }
 
@@ -184,17 +187,20 @@ internal fun OverviewCard(
                     OverviewMetricItem(
                             label = stringResource(R.string.node_net_speed),
                             primaryText = "↑ ${formatSpeed(totalNetOut)}",
-                            secondaryText = "↓ ${formatSpeed(totalNetIn)}"
+                            secondaryText = "↓ ${formatSpeed(totalNetIn)}",
+                            modifier = Modifier.weight(1f)
                     )
                     OverviewMetricItem(
                             label = stringResource(R.string.node_net_traffic),
                             primaryText = "↑ ${formatBytes(totalTrafficUp)}",
-                            secondaryText = "↓ ${formatBytes(totalTrafficDown)}"
+                            secondaryText = "↓ ${formatBytes(totalTrafficDown)}",
+                            modifier = Modifier.weight(1f)
                     )
                     OverviewMetricItem(
                             label = stringResource(R.string.node_net_interval_traffic),
                             primaryText = "↑ ${formatBytes(currentTrafficUp)}",
-                            secondaryText = "↓ ${formatBytes(currentTrafficDown)}"
+                            secondaryText = "↓ ${formatBytes(currentTrafficDown)}",
+                            modifier = Modifier.weight(1f)
                     )
                 }
             }

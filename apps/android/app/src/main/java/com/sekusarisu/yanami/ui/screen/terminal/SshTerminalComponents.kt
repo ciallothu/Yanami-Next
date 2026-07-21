@@ -575,7 +575,7 @@ private val FN_ROW2_KEYS =
         )
 
 private val BTN_PADDING = PaddingValues(horizontal = 1.dp)
-private val BTN_HEIGHT = 36.dp
+private val BTN_HEIGHT = 44.dp
 
 @Composable
 internal fun SpecialKeysToolbar(
@@ -638,7 +638,7 @@ internal fun SpecialKeysToolbar(
         ) {
             Icon(
                     imageVector = Icons.Filled.Keyboard,
-                    contentDescription = null,
+                    contentDescription = stringResource(R.string.terminal_key_show_keyboard),
                     tint = normalColor,
                     modifier = Modifier.size(18.dp)
             )

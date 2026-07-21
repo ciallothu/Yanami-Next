@@ -11,6 +11,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -82,6 +83,8 @@ class KomariAuthService(private val httpClient: HttpClient) {
                 Log.w(TAG, "Login rejected without a session token")
                 loginFailureResult(responsePrefix)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Login request failed (${e::class.java.simpleName})")
             LoginResult.Error(LOGIN_REQUEST_FAILED_MESSAGE)
@@ -125,6 +128,8 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val isValid = !version.isNullOrBlank()
             Log.d(TAG, "API Key validation completed: valid=$isValid")
             isValid
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "API Key validation failed (${e::class.java.simpleName})")
             false
@@ -169,6 +174,8 @@ class KomariAuthService(private val httpClient: HttpClient) {
             val isValid = loggedIn == true && username != "Guest"
             Log.d(TAG, "Session validation completed: valid=$isValid")
             isValid
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Session validation failed (${e::class.java.simpleName})")
             false
@@ -193,6 +200,8 @@ class KomariAuthService(private val httpClient: HttpClient) {
                 applyAuth(sessionToken, AuthType.PASSWORD)
             }
             Log.d(TAG, "Logout successful")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Logout request failed (${e::class.java.simpleName})")
         }

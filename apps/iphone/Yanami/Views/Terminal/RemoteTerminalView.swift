@@ -7,23 +7,42 @@ struct TerminalNavigationWrapper: View {
     let server: ServerProfile
 
     @EnvironmentObject private var store: AppStore
-    @State private var token: String?
+    @State private var terminalAttempt: ResolvedTerminalAttempt?
+    @State private var retryGeneration: UInt64 = 0
     @State private var error: String?
     @State private var isResolvingToken = false
     @State private var didResolveInitialToken = false
+    @State private var isShowingTwoFactorPrompt = false
+    @State private var twoFactorCode = ""
+    @State private var twoFactorPromptError: String?
+    @State private var forcePasswordLoginAfterPrompt = false
+    @State private var passwordTwoFactorHint = false
 
     var body: some View {
         Group {
-            if isResolvingToken {
+            if !store.isAuthenticationSnapshotCurrent(server) {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.red)
+                    Text("Server configuration changed. Reopen the terminal.")
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            } else if isShowingTwoFactorPrompt {
+                twoFactorPrompt
+            } else if isResolvingToken {
                 ProgressView("Preparing terminal...")
-            } else if let token {
+            } else if let terminalAttempt {
                 RemoteTerminalScreen(
-                    viewModel: SshTerminalViewModel(uuid: uuid, server: server, token: token),
+                    viewModel: terminalAttempt.viewModel,
                     onRetryAuthentication: {
-                        Task { await resolveToken(forcePasswordLogin: true) }
+                        retry(after: terminalAttempt.viewModel)
                     }
                 )
-                .id(token)
+                // A token can remain unchanged across a retry. Generation, not token equality,
+                // owns StateObject identity so every attempt gets a fresh URLSession task.
+                .id(terminalAttempt.id)
             } else if let error {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle")
@@ -32,7 +51,7 @@ struct TerminalNavigationWrapper: View {
                     Text(error)
                         .multilineTextAlignment(.center)
                     Button("Retry") {
-                        Task { await resolveToken(forcePasswordLogin: true) }
+                        retryAfterPreparationFailure()
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -44,37 +63,201 @@ struct TerminalNavigationWrapper: View {
         .task {
             guard !didResolveInitialToken else { return }
             didResolveInitialToken = true
-            await resolveToken()
+            if requiresTerminalSensitiveTwoFactor(
+                authType: server.authType.rawValue,
+                profileRequiresTwoFactor: server.requires2FA,
+                passwordAuthenticationWasRejected: passwordTwoFactorHint
+            ) {
+                presentTwoFactorPrompt(forcePasswordLogin: false)
+            } else {
+                await resolveToken()
+            }
+        }
+        .onChange(of: store.servers) { _ in
+            guard !store.isAuthenticationSnapshotCurrent(server) else { return }
+            retryGeneration &+= 1
+            terminalAttempt = nil
+            isResolvingToken = false
+            isShowingTwoFactorPrompt = false
+            twoFactorCode = ""
+            twoFactorPromptError = nil
+            error = "Server configuration changed. Reopen the terminal."
         }
     }
 
-    private func resolveToken(forcePasswordLogin: Bool = false) async {
+    private var twoFactorPrompt: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "lock.shield")
+                .font(.largeTitle)
+                .foregroundStyle(.tint)
+            Text("Terminal two-factor authentication")
+                .font(.headline)
+            Text("Komari requires a fresh code for each sensitive terminal connection. The code is used for this connection attempt only and is never saved.")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            SecureField("6-digit code", text: $twoFactorCode)
+                .textContentType(.oneTimeCode)
+                .keyboardType(.numberPad)
+                .textFieldStyle(.roundedBorder)
+                .onChange(of: twoFactorCode) { value in
+                    twoFactorCode = String(
+                        value.filter { $0 >= "0" && $0 <= "9" }.prefix(6)
+                    )
+                    twoFactorPromptError = nil
+                }
+            if let twoFactorPromptError {
+                Text(twoFactorPromptError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Button("Cancel", role: .cancel) {
+                    twoFactorCode = ""
+                    isShowingTwoFactorPrompt = false
+                    error = "Two-factor authentication was cancelled."
+                }
+                Button("Connect") {
+                    let submittedCode = twoFactorCode
+                    guard isValidTerminalTwoFactorCode(submittedCode) else {
+                        twoFactorPromptError = "Enter the current valid 6-digit code."
+                        return
+                    }
+                    twoFactorCode = ""
+                    isShowingTwoFactorPrompt = false
+                    Task {
+                        await resolveToken(
+                            forcePasswordLogin: forcePasswordLoginAfterPrompt,
+                            twoFaCode: submittedCode
+                        )
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!isValidTerminalTwoFactorCode(twoFactorCode))
+            }
+        }
+        .padding()
+    }
+
+    private func resolveToken(
+        forcePasswordLogin: Bool = false,
+        twoFaCode: String? = nil
+    ) async {
         guard !isResolvingToken else { return }
+        retryGeneration &+= 1
+        let requestGeneration = retryGeneration
+        terminalAttempt = nil
         isResolvingToken = true
-        defer { isResolvingToken = false }
+        defer {
+            if isCurrentTerminalRetryGeneration(requestGeneration, current: retryGeneration) {
+                isResolvingToken = false
+            }
+        }
         error = nil
         do {
-            switch server.authType {
-            case .guest:
+            if server.authType == .guest {
                 error = "Guest mode not supported"
-            case .apiKey:
-                let apiKey = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                if apiKey.isEmpty {
-                    error = "API Key is required"
-                } else {
-                    token = apiKey
-                }
-            case .password:
-                token = try await store.authenticationToken(
+            } else {
+                let token = try await store.authenticationToken(
                     for: server,
-                    forcePasswordLogin: forcePasswordLogin
+                    forcePasswordLogin: forcePasswordLogin,
+                    twoFaCode: twoFaCode
+                )
+                guard isCurrentTerminalRetryGeneration(
+                    requestGeneration,
+                    current: retryGeneration
+                ), store.isAuthenticationSnapshotCurrent(server) else { return }
+                let currentRequiresTwoFactor = store.servers.first {
+                    $0.id == server.id
+                }?.requires2FA ?? server.requires2FA
+                if server.authType == .password,
+                   currentRequiresTwoFactor,
+                   twoFaCode == nil {
+                    // The token resolver may have discovered 2FA through its own login challenge.
+                    // Do not make a terminal handshake that is now known to be missing its code.
+                    presentTwoFactorPrompt(forcePasswordLogin: false)
+                    return
+                }
+                let viewModel = SshTerminalViewModel(
+                    uuid: uuid,
+                    server: server,
+                    token: token,
+                    oneTimeTwoFactorCode: twoFaCode
+                )
+                terminalAttempt = ResolvedTerminalAttempt(
+                    id: requestGeneration,
+                    viewModel: viewModel
                 )
             }
-        } catch {
-            token = nil
-            self.error = error.localizedDescription
+        } catch let caughtError {
+            guard isCurrentTerminalRetryGeneration(
+                requestGeneration,
+                current: retryGeneration
+            ) else { return }
+            if let clientError = caughtError as? KomariClientError,
+               server.authType == .password {
+                switch clientError {
+                case .requires2FA:
+                    presentTwoFactorPrompt(forcePasswordLogin: true)
+                    return
+                case .invalidTwoFactorCode:
+                    presentTwoFactorPrompt(
+                        forcePasswordLogin: true,
+                        message: clientError.localizedDescription
+                    )
+                    return
+                default:
+                    break
+                }
+            }
+            terminalAttempt = nil
+            error = caughtError.localizedDescription
         }
     }
+
+    private func presentTwoFactorPrompt(
+        forcePasswordLogin: Bool,
+        message: String? = nil
+    ) {
+        retryGeneration &+= 1
+        terminalAttempt = nil
+        isResolvingToken = false
+        error = nil
+        passwordTwoFactorHint = true
+        forcePasswordLoginAfterPrompt = forcePasswordLogin
+        twoFactorCode = ""
+        twoFactorPromptError = message
+        isShowingTwoFactorPrompt = true
+    }
+
+    private func retry(after viewModel: SshTerminalViewModel) {
+        if server.authType == .password &&
+            (server.requires2FA || passwordTwoFactorHint ||
+                viewModel.shouldRequestTwoFactorOnRetry) {
+            presentTwoFactorPrompt(
+                forcePasswordLogin: viewModel.shouldRefreshAuthenticationOnRetry
+            )
+        } else {
+            Task {
+                await resolveToken(
+                    forcePasswordLogin: viewModel.shouldRefreshAuthenticationOnRetry
+                )
+            }
+        }
+    }
+
+    private func retryAfterPreparationFailure() {
+        if server.authType == .password && (server.requires2FA || passwordTwoFactorHint) {
+            presentTwoFactorPrompt(forcePasswordLogin: true)
+        } else {
+            Task { await resolveToken(forcePasswordLogin: true) }
+        }
+    }
+}
+
+private struct ResolvedTerminalAttempt {
+    let id: UInt64
+    let viewModel: SshTerminalViewModel
 }
 
 private struct RemoteTerminalScreen: View {
@@ -138,6 +321,7 @@ private struct RemoteTerminalScreen: View {
                 } label: {
                     Image(systemName: "command")
                 }
+                .accessibilityLabel("Command snippets")
             }
         }
         .onAppear {
@@ -168,18 +352,34 @@ private struct RemoteTerminalScreen: View {
     private var keyboardAccessoryBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                TerminalKeyButton(title: "Ctrl", isHighlighted: viewModel.ctrlActive) {
+                TerminalKeyButton(
+                    title: "Ctrl",
+                    isHighlighted: viewModel.ctrlActive,
+                    reportsToggleState: true
+                ) {
                     viewModel.ctrlActive.toggle()
                 }
-                TerminalKeyButton(title: "Alt", isHighlighted: viewModel.altActive) {
+                TerminalKeyButton(
+                    title: "Alt",
+                    isHighlighted: viewModel.altActive,
+                    reportsToggleState: true
+                ) {
                     viewModel.altActive.toggle()
                 }
                 TerminalKeyButton(title: "Esc") { viewModel.sendText("\u{1b}") }
                 TerminalKeyButton(title: "Tab") { viewModel.sendText("\t") }
-                TerminalKeyButton(title: "↑") { viewModel.sendText("\u{1b}[A") }
-                TerminalKeyButton(title: "↓") { viewModel.sendText("\u{1b}[B") }
-                TerminalKeyButton(title: "←") { viewModel.sendText("\u{1b}[D") }
-                TerminalKeyButton(title: "→") { viewModel.sendText("\u{1b}[C") }
+                TerminalKeyButton(title: "↑", accessibilityLabel: "Up arrow") {
+                    viewModel.sendText("\u{1b}[A")
+                }
+                TerminalKeyButton(title: "↓", accessibilityLabel: "Down arrow") {
+                    viewModel.sendText("\u{1b}[B")
+                }
+                TerminalKeyButton(title: "←", accessibilityLabel: "Left arrow") {
+                    viewModel.sendText("\u{1b}[D")
+                }
+                TerminalKeyButton(title: "→", accessibilityLabel: "Right arrow") {
+                    viewModel.sendText("\u{1b}[C")
+                }
             }
             .padding(8)
         }
@@ -333,17 +533,30 @@ struct RemoteTerminalView: UIViewRepresentable {
 private struct TerminalKeyButton: View {
     let title: String
     var isHighlighted = false
+    var accessibilityLabel: String?
+    var reportsToggleState = false
     let action: () -> Void
 
+    @ViewBuilder
     var body: some View {
-        Button(action: action) {
+        let button = Button(action: action) {
             Text(title)
                 .font(.system(.subheadline, design: .monospaced))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
+                .frame(minWidth: 44, minHeight: 44)
                 .background(isHighlighted ? Color.accentColor : Color.secondary.opacity(0.2))
                 .foregroundColor(isHighlighted ? .white : .primary)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .accessibilityLabel(
+            Text(LocalizedStringKey(accessibilityLabel ?? title))
+        )
+
+        if reportsToggleState {
+            button.accessibilityValue(isHighlighted ? Text("On") : Text("Off"))
+        } else {
+            button
         }
     }
 }

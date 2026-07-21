@@ -49,7 +49,7 @@ struct NodeListView: View {
                 }
             }
             .navigationTitle(store.activeServer?.name ?? "Nodes")
-            .searchable(text: $store.searchQuery, prompt: "Search node, IP, UUID, group")
+            .searchable(text: $store.searchQuery, prompt: nodeSearchPrompt)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     HStack {
@@ -92,6 +92,14 @@ struct NodeListView: View {
             }
         }
     }
+
+    private var nodeSearchPrompt: Text {
+        if store.settings.maskIpEnabled {
+            Text("Search node, UUID, group")
+        } else {
+            Text("Search node, IP, UUID, group")
+        }
+    }
 }
 
 private struct NodeSummaryView: View {
@@ -112,7 +120,9 @@ private struct NodeSummaryView: View {
             ) {
                 SummaryMetricView(
                     title: "Realtime Speed",
-                    value: Formatters.rate(store.totalNetIn + store.totalNetOut),
+                    value: Formatters.rate(
+                        saturatingNonNegativeSum([store.totalNetIn, store.totalNetOut])
+                    ),
                     systemImage: "arrow.up.arrow.down"
                 )
                 SummaryMetricView(
@@ -127,7 +137,9 @@ private struct NodeSummaryView: View {
                 )
                 SummaryMetricView(
                     title: "Latest Traffic",
-                    value: Formatters.bytes(store.totalTrafficUp + store.totalTrafficDown),
+                    value: Formatters.bytes(
+                        saturatingNonNegativeSum([store.totalTrafficUp, store.totalTrafficDown])
+                    ),
                     systemImage: "chart.bar"
                 )
                 SummaryMetricView(
@@ -142,7 +154,9 @@ private struct NodeSummaryView: View {
                 )
                 SummaryMetricView(
                     title: "Total Usage",
-                    value: Formatters.bytes(store.totalUsageUp + store.totalUsageDown),
+                    value: Formatters.bytes(
+                        saturatingNonNegativeSum([store.totalUsageUp, store.totalUsageDown])
+                    ),
                     systemImage: "externaldrive"
                 )
                 SummaryMetricView(
@@ -359,7 +373,15 @@ private struct AdminNavigationWrapper: View {
 
     var body: some View {
         Group {
-            if isResolvingToken {
+            if !appStore.isAuthenticationSnapshotCurrent(server) {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundColor(.red)
+                    Text("Server configuration changed. Reopen the admin panel.")
+                        .multilineTextAlignment(.center)
+                }
+                .padding()
+            } else if isResolvingToken {
                 ProgressView("Preparing admin panel...")
             } else if let token = token {
                 AdminView(
@@ -401,16 +423,9 @@ private struct AdminNavigationWrapper: View {
         defer { isResolvingToken = false }
         error = nil
         do {
-            switch server.authType {
-            case .guest:
+            if server.authType == .guest {
                 error = "Guest mode not supported"
-            case .apiKey:
-                let apiKey = server.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                if apiKey.isEmpty {
-                    throw KomariClientError.invalidConfiguration("API Key is required")
-                }
-                token = apiKey
-            case .password:
+            } else {
                 token = try await appStore.authenticationToken(
                     for: server,
                     forcePasswordLogin: forcePasswordLogin

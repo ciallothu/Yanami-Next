@@ -2,6 +2,7 @@ package com.sekusarisu.yanami
 
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.setContent
@@ -49,6 +50,7 @@ import cafe.adriel.voyager.navigator.Navigator
 import cafe.adriel.voyager.transitions.SlideTransition
 import com.sekusarisu.yanami.data.local.preferences.UserPreferences
 import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
+import com.sekusarisu.yanami.data.local.crypto.BiometricLockManager
 import com.sekusarisu.yanami.data.remote.UpdateCheckService
 import com.sekusarisu.yanami.domain.repository.ServerRepository
 import com.sekusarisu.yanami.ui.screen.rememberAdaptiveLayoutInfo
@@ -66,6 +68,8 @@ import com.sekusarisu.yanami.ui.screen.settings.SettingsScreen
 import com.sekusarisu.yanami.ui.screen.terminal.SshTerminalScreen
 import com.sekusarisu.yanami.ui.theme.ThemeColor
 import com.sekusarisu.yanami.ui.theme.YanamiTheme
+import com.sekusarisu.yanami.ui.widget.WidgetUpdateWorker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import org.koin.android.ext.android.inject
@@ -79,12 +83,14 @@ import org.koin.android.ext.android.inject
 class MainActivity : AppCompatActivity() {
 
     private val prefsRepo: UserPreferencesRepository by inject()
+    private val biometricLockManager: BiometricLockManager by inject()
     private val serverRepo: ServerRepository by inject()
     private val updateCheckService: UpdateCheckService by inject()
     private var authReady by mutableStateOf(false)
     private var authenticationPromptVisible = false
     private var authenticationGeneration = 0
     private var pendingAuthenticationSuccess = false
+    private var pendingAuthenticationAtElapsedRealtime = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -104,7 +110,10 @@ class MainActivity : AppCompatActivity() {
 
             // 解析初始导航栈
             var initialScreens by remember { mutableStateOf<List<Screen>?>(null) }
-            LaunchedEffect(Unit) {
+            LaunchedEffect(authReady) {
+                // Do not decrypt server credentials or make network requests before the
+                // cryptographic app-lock proof has succeeded.
+                if (!authReady || initialScreens != null) return@LaunchedEffect
                 val initPrefs = prefsRepo.preferencesFlow.first()
                 val screens = if (initPrefs.autoEnterNodeList) {
                     val activeServer = serverRepo.getActive()
@@ -188,7 +197,7 @@ class MainActivity : AppCompatActivity() {
                                 SlideTransition(navigator)
                             }
                         }
-                    } else if (screens != null && prefs.biometricEnabled) {
+                    } else if (!authReady && prefs.biometricLockRequired) {
                         BiometricLockedContent(onUnlock = ::authenticateIfNeeded)
                     }
                 }
@@ -199,8 +208,18 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (pendingAuthenticationSuccess) {
+            val pendingAge =
+                    SystemClock.elapsedRealtime() - pendingAuthenticationAtElapsedRealtime
+            val isFresh = pendingAge in 0..MAX_PENDING_AUTH_AGE_MILLIS
             pendingAuthenticationSuccess = false
-            authReady = true
+            pendingAuthenticationAtElapsedRealtime = 0L
+            authenticationPromptVisible = false
+            if (isFresh) {
+                authReady = true
+            } else {
+                authenticationGeneration += 1
+                authReady = false
+            }
         }
         if (authReady) {
             window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -232,15 +251,13 @@ class MainActivity : AppCompatActivity() {
             ) {
                 return@launch
             }
-            if (!preferences.biometricEnabled) {
+            if (!preferences.biometricLockRequired) {
                 completeAuthentication(generation)
                 return@launch
             }
             if (authReady || authenticationPromptVisible) return@launch
 
-            val authenticators =
-                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            val authenticators = biometricLockManager.allowedAuthenticators
             if (BiometricManager.from(this@MainActivity).canAuthenticate(authenticators) !=
                             BiometricManager.BIOMETRIC_SUCCESS
             ) {
@@ -256,17 +273,47 @@ class MainActivity : AppCompatActivity() {
 
             authenticationPromptVisible = true
             showBiometricPrompt(
-                    onSuccess = {
-                        if (generation == authenticationGeneration) {
-                            completeAuthentication(generation)
+                    encodedEnvelope = preferences.biometricEnvelope,
+                    onSuccess = { verifiedEnvelope, session ->
+                        if (generation != authenticationGeneration) {
+                            biometricLockManager.abandonAuthentication(session)
+                            return@showBiometricPrompt
+                        }
+                        lifecycleScope.launch {
+                            var envelopePersisted =
+                                    preferences.biometricEnabled &&
+                                            preferences.biometricEnvelope == verifiedEnvelope
+                            try {
+                                if (!envelopePersisted) {
+                                    WidgetUpdateWorker.transitionLockState(
+                                            context = this@MainActivity,
+                                            locked = true
+                                    ) {
+                                        prefsRepo.setBiometricLock(true, verifiedEnvelope)
+                                        envelopePersisted = true
+                                        biometricLockManager.retainKeyForEnvelope(verifiedEnvelope)
+                                    }
+                                } else {
+                                    biometricLockManager.retainKeyForEnvelope(verifiedEnvelope)
+                                }
+                                if (generation == authenticationGeneration) {
+                                    completeAuthentication(generation)
+                                }
+                            } catch (error: CancellationException) {
+                                if (!envelopePersisted) {
+                                    biometricLockManager.abandonAuthentication(session)
+                                }
+                                throw error
+                            } catch (_: Exception) {
+                                if (!envelopePersisted) {
+                                    biometricLockManager.abandonAuthentication(session)
+                                }
+                                failAuthentication(generation)
+                            }
                         }
                     },
                     onError = {
-                        if (generation == authenticationGeneration) {
-                            authenticationPromptVisible = false
-                            pendingAuthenticationSuccess = false
-                            authReady = false
-                        }
+                        failAuthentication(generation)
                     }
             )
         }
@@ -277,22 +324,64 @@ class MainActivity : AppCompatActivity() {
         authenticationPromptVisible = false
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
             pendingAuthenticationSuccess = true
+            pendingAuthenticationAtElapsedRealtime = SystemClock.elapsedRealtime()
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             authReady = false
             return
         }
         pendingAuthenticationSuccess = false
+        pendingAuthenticationAtElapsedRealtime = 0L
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         authReady = true
     }
 
-    private fun showBiometricPrompt(onSuccess: () -> Unit, onError: () -> Unit) {
+    private fun failAuthentication(generation: Int) {
+        if (generation != authenticationGeneration) return
+        authenticationPromptVisible = false
+        pendingAuthenticationSuccess = false
+        pendingAuthenticationAtElapsedRealtime = 0L
+        authReady = false
+    }
+
+    private fun showBiometricPrompt(
+            encodedEnvelope: String?,
+            onSuccess: (String, BiometricLockManager.AuthenticationSession) -> Unit,
+            onError: () -> Unit
+    ) {
+        val session =
+                try {
+                    biometricLockManager.prepareAuthentication(encodedEnvelope)
+                } catch (_: Exception) {
+                    Toast.makeText(this, R.string.biometric_verification_failed, Toast.LENGTH_LONG)
+                            .show()
+                    onError()
+                    return
+                }
         val executor = ContextCompat.getMainExecutor(this)
+        var callbackFinished = false
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                onSuccess()
+                if (callbackFinished) return
+                callbackFinished = true
+                val verifiedEnvelope =
+                        biometricLockManager.completeAuthentication(session, result)
+                if (verifiedEnvelope == null) {
+                    biometricLockManager.abandonAuthentication(session)
+                    Toast.makeText(
+                                    this@MainActivity,
+                                    R.string.biometric_verification_failed,
+                                    Toast.LENGTH_LONG
+                            )
+                            .show()
+                    onError()
+                } else {
+                    onSuccess(verifiedEnvelope, session)
+                }
             }
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                if (callbackFinished) return
+                callbackFinished = true
+                biometricLockManager.abandonAuthentication(session)
                 onError()
             }
             override fun onAuthenticationFailed() {
@@ -300,15 +389,28 @@ class MainActivity : AppCompatActivity() {
             }
         }
         val biometricPrompt = BiometricPrompt(this, executor, callback)
-        val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle(getString(R.string.biometric_prompt_title))
-            .setSubtitle(getString(R.string.biometric_prompt_subtitle))
-            .setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                BiometricManager.Authenticators.DEVICE_CREDENTIAL
-            )
-            .build()
-        biometricPrompt.authenticate(promptInfo)
+        val authenticators = biometricLockManager.allowedAuthenticators
+        val promptBuilder =
+                BiometricPrompt.PromptInfo.Builder()
+                        .setTitle(getString(R.string.biometric_prompt_title))
+                        .setSubtitle(getString(R.string.biometric_prompt_subtitle))
+                        .setAllowedAuthenticators(authenticators)
+        if (authenticators and BiometricManager.Authenticators.DEVICE_CREDENTIAL == 0) {
+            promptBuilder.setNegativeButtonText(getString(R.string.action_cancel))
+        }
+        try {
+            biometricPrompt.authenticate(promptBuilder.build(), session.cryptoObject)
+        } catch (_: RuntimeException) {
+            if (callbackFinished) return
+            callbackFinished = true
+            biometricLockManager.abandonAuthentication(session)
+            Toast.makeText(this, R.string.biometric_verification_failed, Toast.LENGTH_LONG).show()
+            onError()
+        }
+    }
+
+    private companion object {
+        const val MAX_PENDING_AUTH_AGE_MILLIS = 30_000L
     }
 }
 

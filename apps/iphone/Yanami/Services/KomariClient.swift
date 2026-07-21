@@ -28,6 +28,21 @@ struct KomariClient {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw KomariClientError.invalidResponse
         }
+        // Komari reports a missing/invalid TOTP as a 401 JSON envelope. Parse that trusted,
+        // bounded shape before converting the response into a generic authentication failure so
+        // callers can ask for a code and retry the same login exactly once per user submission.
+        if httpResponse.statusCode == 401,
+           let envelope = try? Self.decoder.decode(AdminEnvelope.self, from: data),
+           let message = envelope.message {
+            switch classifyKomariLoginTwoFactorMessage(message) {
+            case .required:
+                throw KomariClientError.requires2FA
+            case .invalidCode:
+                throw KomariClientError.invalidTwoFactorCode
+            case .none:
+                break
+            }
+        }
         guard (200...299).contains(httpResponse.statusCode) else {
             throw KomariClientError.httpStatus(httpResponse.statusCode, path: "/api/login")
         }
@@ -234,6 +249,9 @@ struct KomariClient {
     func mergeNodes(infos: [String: NodeInfoPayload], statuses: [String: NodeStatusPayload]) -> [KomariNode] {
         infos.map { uuid, info in
             let status = statuses[uuid]
+            let reportedTime = (status?.time ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let statusTime = validatedStatusTimeOrEmpty(reportedTime)
+            let sampledStatus = reportedTime.isEmpty || !statusTime.isEmpty ? status : nil
             return KomariNode(
                 uuid: uuid,
                 name: (info.name ?? "").isEmpty ? uuid : info.name ?? uuid,
@@ -242,34 +260,34 @@ struct KomariClient {
                 ipv4: info.ipv4 ?? "",
                 ipv6: info.ipv6 ?? "",
                 isOnline: status?.online ?? false,
-                statusTime: status?.time ?? "",
-                cpuUsage: status?.cpu ?? 0,
-                memUsed: status?.ram ?? 0,
-                memTotal: nonZero(status?.ramTotal, fallback: info.memTotal),
-                swapUsed: status?.swap ?? 0,
-                swapTotal: nonZero(status?.swapTotal, fallback: info.swapTotal),
-                diskUsed: status?.disk ?? 0,
-                diskTotal: nonZero(status?.diskTotal, fallback: info.diskTotal),
-                netIn: status?.netIn ?? 0,
-                netOut: status?.netOut ?? 0,
-                netTotalUp: status?.netTotalUp ?? 0,
-                netTotalDown: status?.netTotalDown ?? 0,
+                statusTime: statusTime,
+                cpuUsage: sampledStatus?.cpu ?? 0,
+                memUsed: sampledStatus?.ram ?? 0,
+                memTotal: nonZero(sampledStatus?.ramTotal, fallback: info.memTotal),
+                swapUsed: sampledStatus?.swap ?? 0,
+                swapTotal: nonZero(sampledStatus?.swapTotal, fallback: info.swapTotal),
+                diskUsed: sampledStatus?.disk ?? 0,
+                diskTotal: nonZero(sampledStatus?.diskTotal, fallback: info.diskTotal),
+                netIn: sampledStatus?.netIn ?? 0,
+                netOut: sampledStatus?.netOut ?? 0,
+                netTotalUp: sampledStatus?.netTotalUp ?? 0,
+                netTotalDown: sampledStatus?.netTotalDown ?? 0,
                 trafficUp: 0,
                 trafficDown: 0,
-                uptime: status?.uptime ?? 0,
+                uptime: sampledStatus?.uptime ?? 0,
                 os: info.os ?? "",
                 cpuName: info.cpuName ?? "",
                 cpuCores: info.cpuCores ?? 0,
                 weight: info.weight ?? 0,
-                load1: status?.load ?? 0,
-                load5: status?.load5 ?? 0,
-                load15: status?.load15 ?? 0,
-                process: status?.process ?? 0,
-                connectionsTcp: latestTCPConnections(
-                    total: status?.connections,
-                    udp: status?.connectionsUdp
+                load1: sampledStatus?.load ?? 0,
+                load5: sampledStatus?.load5 ?? 0,
+                load15: sampledStatus?.load15 ?? 0,
+                process: sampledStatus?.process ?? 0,
+                connectionsTcp: safeTCPConnectionCount(
+                    total: sampledStatus?.connections,
+                    udp: sampledStatus?.connectionsUdp
                 ),
-                connectionsUdp: status?.connectionsUdp ?? 0,
+                connectionsUdp: max(sampledStatus?.connectionsUdp ?? 0, 0),
                 kernelVersion: info.kernelVersion ?? "",
                 virtualization: info.virtualization ?? "",
                 arch: info.arch ?? "",
@@ -305,7 +323,13 @@ struct KomariClient {
                 incomingTotalUp: status.netTotalUp,
                 incomingTotalDown: status.netTotalDown
             ) else {
-                return node
+                // Komari derives `online` from the live connection set independently of the
+                // report timestamp. Preserve every sampled metric, but keep presence current.
+                var presenceUpdated = node
+                if let online = status.online {
+                    presenceUpdated.isOnline = online
+                }
+                return presenceUpdated
             }
 
             var updated = node
@@ -335,11 +359,11 @@ struct KomariClient {
             updated.load5 = status.load5 ?? 0
             updated.load15 = status.load15 ?? 0
             updated.process = status.process ?? 0
-            updated.connectionsTcp = latestTCPConnections(
+            updated.connectionsTcp = safeTCPConnectionCount(
                 total: status.connections,
                 udp: status.connectionsUdp
             )
-            updated.connectionsUdp = status.connectionsUdp ?? 0
+            updated.connectionsUdp = max(status.connectionsUdp ?? 0, 0)
             return updated
         }
         .sorted {
@@ -542,6 +566,7 @@ enum KomariClientError: LocalizedError {
     case httpStatus(Int, path: String)
     case rpc(String)
     case requires2FA
+    case invalidTwoFactorCode
 
     /// A deliberately narrow signal for retrying expired password sessions.
     /// Callers must not infer authentication failures from untrusted response text.
@@ -562,6 +587,8 @@ enum KomariClientError: LocalizedError {
             return message
         case .requires2FA:
             return "Two-factor authentication is required"
+        case .invalidTwoFactorCode:
+            return "The two-factor authentication code is invalid"
         }
     }
 }
@@ -672,8 +699,8 @@ private struct LoadRecordPayload: Decodable {
             trafficDown: trafficDown,
             load: load ?? 0,
             process: process ?? 0,
-            connections: connections ?? 0,
-            connectionsUdp: connectionsUdp ?? 0
+            connections: safeTCPConnectionCount(total: connections, udp: connectionsUdp),
+            connectionsUdp: max(connectionsUdp ?? 0, 0)
         )
     }
 }
@@ -763,8 +790,8 @@ private struct RecentStatusItemPayload: Decodable {
             trafficDown: trafficDown,
             load: load?.load1 ?? 0,
             process: process ?? 0,
-            connections: connections?.tcp ?? 0,
-            connectionsUdp: connections?.udp ?? 0
+            connections: max(connections?.tcp ?? 0, 0),
+            connectionsUdp: max(connections?.udp ?? 0, 0)
         )
     }
 }
@@ -772,10 +799,6 @@ private struct RecentStatusItemPayload: Decodable {
 private func percent(used: Int64?, total: Int64?) -> Double {
     guard let used, let total, total > 0 else { return 0 }
     return Double(used) / Double(total) * 100
-}
-
-private func latestTCPConnections(total: Int?, udp: Int?) -> Int {
-    max(0, (total ?? 0) - (udp ?? 0))
 }
 
 private extension Dictionary where Key == String {

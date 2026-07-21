@@ -6,7 +6,7 @@ Native SwiftUI iPhone app for Yanami Next.
 
 - Connects to Komari with password, API Key, or guest mode.
 - Supports custom HTTP headers, including Cloudflare Access service token headers.
-- Stores server profiles, credentials, custom headers, active instance, and refresh settings in Keychain.
+- Stores app state as ThisDeviceOnly Keychain data; when App Lock is enabled, the complete state is AES-256-GCM sealed and its random key requires Keychain biometric/user-presence authorization.
 - Tests the connection through `common:getVersion`.
 - Loads node information, latest status, node detail, recent load data, load records, and ping records through Komari RPC.
 - Auto-refreshes node status on the same cadence as the Android live node list.

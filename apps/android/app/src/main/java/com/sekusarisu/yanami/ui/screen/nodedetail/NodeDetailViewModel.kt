@@ -4,6 +4,8 @@ import android.content.Context
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.data.repository.mergeLatestNodeStatus
+import com.sekusarisu.yanami.data.repository.reconcileRefreshedNodes
+import com.sekusarisu.yanami.data.repository.shouldAcceptLatestNodeStatus
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.LoadRecord
 import com.sekusarisu.yanami.domain.model.Node
@@ -14,6 +16,7 @@ import com.sekusarisu.yanami.domain.repository.Requires2FAException
 import com.sekusarisu.yanami.domain.repository.ServerRepository
 import com.sekusarisu.yanami.domain.repository.SessionExpiredException
 import com.sekusarisu.yanami.mvi.MviViewModel
+import com.sekusarisu.yanami.ui.screen.isCurrentRequestGeneration
 import com.sekusarisu.yanami.ui.screen.isSessionAuthError
 import com.sekusarisu.yanami.ui.screen.isTwoFaHint
 import java.time.Instant
@@ -35,6 +38,8 @@ class NodeDetailViewModel(
         private var wsJob: Job? = null
         private var resumeStreamingJob: Job? = null
         private var seedFetchJob: Job? = null
+        private var detailLoadJob: Job? = null
+        private var detailLoadGeneration = 0L
         private val realtimeLoadRecordBuffer = ArrayDeque<LoadRecord>(MAX_REALTIME_RECORDS)
         private val realtimeTimeLabelBuffer = ArrayDeque<String>(MAX_REALTIME_RECORDS)
         private val realtimeCpuSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
@@ -123,8 +128,17 @@ class NodeDetailViewModel(
 
         /** 加载节点详情：基本信息 + 负载记录 + Ping 记录 */
         private fun loadNodeDetail() {
+                val generation = ++detailLoadGeneration
+                detailLoadJob?.cancel()
+                seedFetchJob?.cancel()
+                seedFetchJob = null
+                resumeStreamingJob?.cancel()
+                resumeStreamingJob = null
+                wsJob?.cancel()
+                wsJob = null
                 setState { copy(isLoading = true, error = null) }
-                screenModelScope.launch {
+                val previousNode = currentState.node
+                detailLoadJob = screenModelScope.launch {
                         var activeServerId: Long? = null
                         var activeRequires2fa = false
                         var activeAuthType = AuthType.PASSWORD
@@ -141,6 +155,10 @@ class NodeDetailViewModel(
                                 activeAuthType = server.authType
 
                                 val sessionToken = ensureSession(server)
+                                if (!isCurrentDetailLoadForServer(generation, server.id)) {
+                                        loadNodeDetail()
+                                        return@launch
+                                }
 
                                 // 获取节点基本信息（包含实时状态）
                                 val allNodes =
@@ -148,15 +166,27 @@ class NodeDetailViewModel(
                                                 baseUrl = server.baseUrl,
                                                 sessionToken = sessionToken,
                                                 authType = server.authType,
-                                                customHeaders = server.customHeaders.toList()
+                                                customHeaders = server.customHeaders.toList(),
+                                                previousNodes = listOfNotNull(previousNode)
                                         )
-                                val node =
+                                if (!isCurrentDetailLoadForServer(generation, server.id)) {
+                                        loadNodeDetail()
+                                        return@launch
+                                }
+                                val refreshedNode =
                                         allNodes.find { it.uuid == uuid }
                                                 ?: throw Exception(
                                                         context.getString(
                                                                 R.string.node_detail_not_found
                                                         )
                                                 )
+                                val node =
+                                        reconcileRefreshedNodes(
+                                                        previousNodes =
+                                                                listOfNotNull(currentState.node),
+                                                        refreshedNodes = listOf(refreshedNode)
+                                                )
+                                                .single()
 
                                 setState {
                                         copy(
@@ -168,6 +198,7 @@ class NodeDetailViewModel(
                                                 authType = server.authType
                                         )
                                 }
+                                if (!isCurrentDetailLoad(generation)) return@launch
                                 activeStreamServerId = server.id
                                 activeStreamRequires2fa = server.requires2fa
                                 activeStreamAuthType = server.authType
@@ -183,8 +214,18 @@ class NodeDetailViewModel(
                                                         customHeaders =
                                                                 server.customHeaders.toList()
                                                 )
+                                        } catch (e: CancellationException) {
+                                                throw e
                                         } catch (_: Exception) {
                                                 emptyList()
+                                        }
+                                        if (!isCurrentDetailLoadForServer(
+                                                        generation,
+                                                        server.id
+                                                )
+                                        ) {
+                                                loadNodeDetail()
+                                                return@launch
                                         }
                                         replaceRealtimeRecords(recentRecords)
                                         setState {
@@ -196,8 +237,18 @@ class NodeDetailViewModel(
                                 }
 
                                 // 启动复用的 WebSocket 获取实时状态和历史记录
+                                if (!isCurrentDetailLoad(generation)) return@launch
                                 startWebSocket()
+                        } catch (e: CancellationException) {
+                                throw e
                         } catch (e: Exception) {
+                                if (!isCurrentDetailLoad(generation)) return@launch
+                                if (activeServerId != null &&
+                                                serverRepository.getActive()?.id != activeServerId
+                                ) {
+                                        loadNodeDetail()
+                                        return@launch
+                                }
                                 if (activeServerId != null &&
                                                 handleSessionExpired(
                                                         activeServerId,
@@ -215,25 +266,45 @@ class NodeDetailViewModel(
                                                         context.getString(
                                                                 R.string.node_detail_load_failed,
                                                                 e.message
-                                                        )
+                                                )
                                         )
                                 }
+                                if (activeServerId == activeStreamServerId) {
+                                        resumeStreamingIfNeeded()
+                                }
+                        } finally {
+                                if (isCurrentDetailLoad(generation)) detailLoadJob = null
                         }
                 }
         }
+
+        private fun isCurrentDetailLoad(generation: Long): Boolean =
+                isCurrentRequestGeneration(generation, detailLoadGeneration)
+
+        private suspend fun isCurrentDetailLoadForServer(
+                generation: Long,
+                serverId: Long
+        ): Boolean =
+                isCurrentDetailLoad(generation) && serverRepository.getActive()?.id == serverId
 
         /** 调用 common:getNodeRecentStatus 获取最近 1 分钟未降采样数据，用作实时图表 seed */
         private suspend fun fetchRecentAsSeed(): List<LoadRecord> {
                 val server = serverRepository.getActive() ?: return emptyList()
                 return try {
                         val sessionToken = ensureSession(server)
-                        nodeRepository.getNodeRecentStatus(
+                        val records = nodeRepository.getNodeRecentStatus(
                                 baseUrl = server.baseUrl,
                                 sessionToken = sessionToken,
                                 uuid = uuid,
                                 authType = server.authType,
                                 customHeaders = server.customHeaders.toList()
                         )
+                        if (serverRepository.getActive()?.id != server.id) {
+                                throw CancellationException("Active server changed")
+                        }
+                        records
+                } catch (e: CancellationException) {
+                        throw e
                 } catch (_: Exception) {
                         emptyList()
                 }
@@ -254,6 +325,9 @@ class NodeDetailViewModel(
                                          val server = serverRepository.getActive() ?: return@launch
                                          activeServer = server
                                         val sessionToken = ensureSession(server)
+                                        if (serverRepository.getActive()?.id != server.id) {
+                                                return@launch
+                                        }
 
                                         nodeRepository.observeNodeDetailWs(
                                                         server.baseUrl,
@@ -273,6 +347,13 @@ class NodeDetailViewModel(
                                                                 server.customHeaders.toList()
                                                 )
                                                 .collect { event ->
+                                                        if (serverRepository.getActive()?.id !=
+                                                                        server.id
+                                                        ) {
+                                                                throw CancellationException(
+                                                                        "Active server changed"
+                                                                )
+                                                        }
                                                         when (event) {
                                                                 is NodeRepository.NodeDetailWsEvent.Status -> {
                                                                         val statusMap =
@@ -283,6 +364,11 @@ class NodeDetailViewModel(
                                                                                         currentState
                                                                                                 .node
                                                                                                 ?: return@collect
+                                                                                val advancesMetrics =
+                                                                                        shouldAcceptLatestNodeStatus(
+                                                                                                currentNode,
+                                                                                                status
+                                                                                        )
                                                                                 val updatedNode =
                                                                                         mergeLatestNodeStatus(
                                                                                                 currentNode,
@@ -291,8 +377,9 @@ class NodeDetailViewModel(
                                                                                 if (updatedNode == currentNode) {
                                                                                         return@collect
                                                                                 }
-                                                                                if (currentState.selectedLoadHours ==
-                                                                                                0
+                                                                                if (advancesMetrics &&
+                                                                                                currentState.selectedLoadHours ==
+                                                                                                        0
                                                                                 ) {
                                                                                         appendRealtimeRecord(
                                                                                                 buildRealtimeRecord(
@@ -385,6 +472,8 @@ class NodeDetailViewModel(
                                                 return@launch
                                         }
                                         startWebSocket()
+                                } catch (e: CancellationException) {
+                                        throw e
                                 } catch (e: Exception) {
                                         if (!handleSessionExpired(
                                                                 serverId,
@@ -395,7 +484,7 @@ class NodeDetailViewModel(
                                         ) {
                                                 android.util.Log.w(
                                                         "NodeDetailVM",
-                                                        "Failed to resume detail stream: ${e.message}"
+                                                        "Failed to resume detail stream (${e::class.java.simpleName})"
                                                 )
                                         }
                                 }
@@ -571,7 +660,7 @@ class NodeDetailViewModel(
                 return try {
                         serverRepository.ensureSessionToken(server)
                 } catch (e: Requires2FAException) {
-                        serverRepository.updateRequires2fa(server.id, true)
+                        serverRepository.updateRequires2fa(server, true)
                         throw SessionExpiredException(
                                 e.message ?: context.getString(R.string.error_no_session)
                         )

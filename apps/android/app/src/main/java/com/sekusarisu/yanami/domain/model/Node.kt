@@ -91,14 +91,16 @@ fun Node.calculateTrafficLimitUsage(): TrafficLimitUsage? {
         val normalizedType = trafficLimitType.lowercase()
         val effectiveType =
                 if (normalizedType in SUPPORTED_TRAFFIC_LIMIT_TYPES) normalizedType else "sum"
+        val upload = netTotalUp.coerceAtLeast(0L)
+        val download = netTotalDown.coerceAtLeast(0L)
         val currentUsage =
                 when (effectiveType) {
-                        "sum" -> netTotalUp + netTotalDown
-                        "max" -> maxOf(netTotalUp, netTotalDown)
-                        "min" -> minOf(netTotalUp, netTotalDown)
-                        "up" -> netTotalUp
-                        "down" -> netTotalDown
-                        else -> netTotalUp + netTotalDown
+                        "sum" -> saturatingNonNegativeAdd(upload, download)
+                        "max" -> maxOf(upload, download)
+                        "min" -> minOf(upload, download)
+                        "up" -> upload
+                        "down" -> download
+                        else -> saturatingNonNegativeAdd(upload, download)
                 }
 
         return TrafficLimitUsage(
@@ -110,6 +112,13 @@ fun Node.calculateTrafficLimitUsage(): TrafficLimitUsage? {
 }
 
 private val SUPPORTED_TRAFFIC_LIMIT_TYPES = setOf("sum", "max", "min", "up", "down")
+
+internal fun saturatingNonNegativeAdd(left: Long, right: Long): Long {
+        val safeLeft = left.coerceAtLeast(0L)
+        val safeRight = right.coerceAtLeast(0L)
+        return if (safeRight > Long.MAX_VALUE - safeLeft) Long.MAX_VALUE
+        else safeLeft + safeRight
+}
 
 /** Komari agents reset cumulative network counters after restarts. */
 fun resetAwareCounterDelta(previous: Long?, current: Long): Long {

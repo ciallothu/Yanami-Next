@@ -5,10 +5,16 @@ struct ServerFormView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var draft: ServerProfile
     @State private var isTesting = false
+    @State private var isSaving = false
     @State private var testMessage = ""
-    let onSave: (ServerProfile) -> Void
+    @State private var twoFaCode = ""
+    @State private var showTwoFactorCode = false
+    @State private var saveTask: Task<Void, Never>?
+    @State private var saveGeneration: UInt64 = 0
+    @State private var formAcceptsSaveCompletion = true
+    let onSave: (PreparedServerProfile) -> Void
 
-    init(server: ServerProfile, onSave: @escaping (ServerProfile) -> Void) {
+    init(server: ServerProfile, onSave: @escaping (PreparedServerProfile) -> Void) {
         _draft = State(initialValue: server)
         self.onSave = onSave
     }
@@ -42,6 +48,14 @@ struct ServerFormView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         SecureField("Password", text: $draft.password)
+                        if showTwoFactorCode || draft.requires2FA {
+                            SecureField("Two-factor authentication code", text: $twoFaCode)
+                                .keyboardType(.numberPad)
+                                .textContentType(.oneTimeCode)
+                            Text("Enter the current code. It is used once and is never saved.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
                     if draft.authType == .apiKey {
@@ -92,16 +106,24 @@ struct ServerFormView: View {
                 }
             }
             .navigationTitle("Komari Instance")
+            .onAppear {
+                formAcceptsSaveCompletion = true
+            }
+            .onDisappear {
+                cancelPendingSave()
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        cancelPendingSave()
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        draft.sessionToken = ""
-                        onSave(draft)
+                        beginSave()
                     }
-                    .disabled(!canSave)
+                    .disabled(!canSave || isSaving)
                 }
             }
         }
@@ -119,10 +141,81 @@ struct ServerFormView: View {
         isTesting = true
         defer { isTesting = false }
         do {
-            let version = try await store.testConnection(draft)
+            let code = twoFaCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let version = try await store.testConnection(
+                draft,
+                twoFaCode: code.isEmpty ? nil : code
+            )
+            draft.requires2FA = !code.isEmpty
             testMessage = "Connected. Komari \(version)"
         } catch {
+            revealTwoFactorFieldIfNeeded(error)
             testMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func beginSave() {
+        saveTask?.cancel()
+        saveGeneration &+= 1
+        let lease = ServerFormSaveLease(generation: saveGeneration)
+        isSaving = true
+        saveTask = Task { @MainActor in
+            await saveServer(lease: lease)
+        }
+    }
+
+    @MainActor
+    private func cancelPendingSave() {
+        formAcceptsSaveCompletion = false
+        saveGeneration &+= 1
+        saveTask?.cancel()
+        saveTask = nil
+        isSaving = false
+    }
+
+    @MainActor
+    private func saveServer(lease: ServerFormSaveLease) async {
+        defer {
+            if lease.generation == saveGeneration {
+                isSaving = false
+                saveTask = nil
+            }
+        }
+        do {
+            let code = twoFaCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prepared = try await store.prepareServerForSave(
+                draft,
+                twoFaCode: code.isEmpty ? nil : code
+            )
+            try Task.checkCancellation()
+            guard canCommitPreparedServerSave(
+                lease,
+                currentGeneration: saveGeneration,
+                formAcceptsCompletion: formAcceptsSaveCompletion,
+                taskIsCancelled: Task.isCancelled
+            ) else {
+                throw CancellationError()
+            }
+            twoFaCode = ""
+            onSave(prepared)
+        } catch is CancellationError {
+            return
+        } catch {
+            revealTwoFactorFieldIfNeeded(error)
+            testMessage = error.localizedDescription
+        }
+    }
+
+    private func revealTwoFactorFieldIfNeeded(_ error: Error) {
+        guard let clientError = error as? KomariClientError else { return }
+        switch clientError {
+        case .requires2FA, .invalidTwoFactorCode:
+            draft.requires2FA = true
+            showTwoFactorCode = true
+            twoFaCode = ""
+        default:
+            break
         }
     }
 }

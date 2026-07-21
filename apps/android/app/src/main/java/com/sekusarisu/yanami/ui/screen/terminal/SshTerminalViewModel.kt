@@ -2,11 +2,15 @@ package com.sekusarisu.yanami.ui.screen.terminal
 
 import android.util.Log
 import cafe.adriel.voyager.core.model.screenModelScope
+import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.data.local.preferences.UserPreferencesRepository
 import com.sekusarisu.yanami.data.remote.buildKomariWebSocketEndpoint
+import com.sekusarisu.yanami.data.remote.isValidSensitiveTwoFactorCode
 import com.sekusarisu.yanami.data.remote.runKomariWebSocketLifecycle
-import com.sekusarisu.yanami.domain.model.TerminalSnippet
 import com.sekusarisu.yanami.domain.model.AuthType
+import com.sekusarisu.yanami.domain.model.ServerInstance
+import com.sekusarisu.yanami.domain.model.TerminalSnippet
+import com.sekusarisu.yanami.domain.repository.Requires2FAException
 import com.sekusarisu.yanami.domain.repository.ServerRepository
 import com.sekusarisu.yanami.mvi.MviViewModel
 import com.sekusarisu.yanami.ui.screen.isSessionAuthError
@@ -16,9 +20,11 @@ import io.ktor.client.HttpClient
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.websocket.Frame
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -32,7 +38,7 @@ import java.util.UUID
  * SSH 终端 ViewModel
  *
  * 管理 WebSocket 连接生命周期，以及 [WsTerminalBridge] 与 WebSocket 之间的双向数据路由：
- * - 原生 Termux 输入/终端响应 → transport → [sendQueue] → WebSocket Binary Frame
+ * - 原生 Termux 输入/终端响应 → transport → 代际隔离发送队列 → WebSocket Binary Frame
  * - WebSocket Text/Binary Frame → bounded output pump → TerminalEmulator → 重绘
  * - 原生 TerminalView 尺寸变化 → transport → resize JSON
  * - 定时 WebSocket ping 保活
@@ -55,10 +61,13 @@ class SshTerminalViewModel(
         private const val MAX_INPUT_CHUNK_BYTES = 32 * 1024
     }
 
-    /** 单一 FIFO 队列保证软键盘、硬件键、粘贴、终端回复和 resize 的发送顺序。 */
-    private val sendQueue = Channel<WsOutMessage>(SEND_QUEUE_CAPACITY)
-
+    private val connectionLock = Any()
     private var wsJob: Job? = null
+    @Volatile
+    private var connectionGeneration = 0L
+    @Volatile
+    private var activeSendQueue: ActiveSendQueue? = null
+    private var passwordHandshakeRequiresTwoFactorHint = false
 
     /**
      * TerminalSession 客户端桥接，Screen 创建 TerminalView 后通过
@@ -72,7 +81,7 @@ class SshTerminalViewModel(
                     sessionClient = clientBridge,
                     onInput = ::sendRawInput,
                     onResize = ::sendResize,
-                    onClose = { wsJob?.cancel() }
+                    onClose = ::cancelCurrentConnection
             )
 
     /** 缓存 onSizeChanged 最后报告的终端尺寸，建连后作为首次 resize 发送 */
@@ -97,7 +106,7 @@ class SshTerminalViewModel(
     override fun onEvent(event: SshTerminalContract.Event) {
         when (event) {
             is SshTerminalContract.Event.Disconnect -> {
-                wsJob?.cancel()
+                cancelCurrentConnection()
                 sendEffect(SshTerminalContract.Effect.NavigateBack)
             }
             is SshTerminalContract.Event.FontSizeChanged -> {
@@ -110,6 +119,24 @@ class SshTerminalViewModel(
             is SshTerminalContract.Event.ToggleAlt ->
                     setState { copy(altActive = !altActive, ctrlActive = false) }
             is SshTerminalContract.Event.ToggleFn -> setState { copy(fnMode = !fnMode) }
+            is SshTerminalContract.Event.Retry -> connect()
+            is SshTerminalContract.Event.SubmitTwoFactorCode -> {
+                val normalizedCode = event.code.trim()
+                if (isValidSensitiveTwoFactorCode(normalizedCode)) {
+                    connect(normalizedCode)
+                } else {
+                    setState {
+                        copy(
+                                showTwoFactorPrompt = true,
+                                hasTwoFactorError = true
+                        )
+                    }
+                }
+            }
+            is SshTerminalContract.Event.CancelTwoFactorPrompt -> {
+                setState { copy(showTwoFactorPrompt = false, hasTwoFactorError = false) }
+                sendEffect(SshTerminalContract.Effect.NavigateBack)
+            }
             is SshTerminalContract.Event.ToggleSnippetsPanel ->
                     setState { copy(isSnippetsPanelOpen = !isSnippetsPanelOpen) }
             is SshTerminalContract.Event.SetSnippetsPanelOpen ->
@@ -221,41 +248,131 @@ class SshTerminalViewModel(
         }
     }
 
-    private fun connect() {
-        wsJob =
-                screenModelScope.launch {
+    private fun connect(oneTimeTwoFactorCode: String? = null) {
+        val normalizedTwoFactorCode = oneTimeTwoFactorCode?.trim()
+        val previousJob: Job?
+        val attemptGeneration: Long
+        synchronized(connectionLock) {
+            previousJob = wsJob
+            attemptGeneration = ++connectionGeneration
+            activeSendQueue?.channel?.close()
+            activeSendQueue = null
+        }
+        setState {
+            copy(
+                    isConnecting = true,
+                    isConnected = false,
+                    error = null,
+                    showTwoFactorPrompt = false,
+                    hasTwoFactorError = false
+            )
+        }
+        val attemptJob =
+                screenModelScope.launch(start = CoroutineStart.LAZY) {
+                    // A retry never overlaps an old sender/receiver. Its per-generation queue is
+                    // closed above, then the old connection must finish cancellation before any
+                    // profile lookup, session refresh, or new handshake can begin.
+                    previousJob?.cancelAndJoin()
+                    if (!isCurrentAttempt(attemptGeneration)) return@launch
+
                     val server = serverRepository.getActive()
                     if (server == null) {
-                        setState { copy(isConnecting = false, error = "未选择服务器") }
+                        updateCurrentAttempt(attemptGeneration) {
+                            copy(isConnecting = false, error = R.string.error_no_server_selected)
+                        }
                         return@launch
                     }
 
                     // GUEST 模式不支持 SSH 终端
                     if (server.authType == AuthType.GUEST) {
-                        setState { copy(isConnecting = false, error = "游客模式不支持 SSH 终端") }
+                        updateCurrentAttempt(attemptGeneration) {
+                            copy(
+                                    isConnecting = false,
+                                    error = R.string.terminal_error_guest_unsupported
+                            )
+                        }
+                        return@launch
+                    }
+
+                    val requiresSensitiveTwoFactor =
+                            requiresTerminalSensitiveTwoFactor(
+                                    authType = server.authType,
+                                    profileRequiresTwoFactor = server.requires2fa,
+                                    passwordAuthenticationWasRejected =
+                                            passwordHandshakeRequiresTwoFactorHint
+                            )
+                    if (requiresSensitiveTwoFactor &&
+                                    !isValidSensitiveTwoFactorCode(
+                                            normalizedTwoFactorCode.orEmpty()
+                                    )
+                    ) {
+                        updateCurrentAttempt(attemptGeneration) {
+                            copy(
+                                    isConnecting = false,
+                                    isConnected = false,
+                                    error = null,
+                                    showTwoFactorPrompt = true,
+                                    hasTwoFactorError = normalizedTwoFactorCode != null
+                            )
+                        }
                         return@launch
                     }
 
                     val sessionToken =
                             try {
-                                serverRepository.ensureSessionToken(server)
+                                // If the cached password session expired, the same transient code
+                                // can refresh it atomically under the repository's authentication
+                                // mutex. It is never persisted; the terminal handshake below is
+                                // the only header use for this attempt.
+                                serverRepository.ensureSessionToken(
+                                        server,
+                                        twoFaCode =
+                                                normalizedTwoFactorCode.takeIf {
+                                                    server.authType == AuthType.PASSWORD
+                                                }
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: Requires2FAException) {
+                                if (isCurrentAttempt(attemptGeneration)) {
+                                    passwordHandshakeRequiresTwoFactorHint = true
+                                    rememberTwoFactorRequirement(server)
+                                    updateCurrentAttempt(attemptGeneration) {
+                                        copy(
+                                                isConnecting = false,
+                                                isConnected = false,
+                                                error = null,
+                                                showTwoFactorPrompt = true,
+                                                hasTwoFactorError =
+                                                        normalizedTwoFactorCode != null
+                                        )
+                                    }
+                                }
+                                return@launch
                             } catch (_: Exception) {
-                                setState {
+                                updateCurrentAttempt(attemptGeneration) {
                                     copy(
                                             isConnecting = false,
                                             isConnected = false,
-                                            error = "无法建立安全会话，请重新登录"
+                                            error = R.string.terminal_error_secure_session
                                     )
                                 }
-                                sendEffect(
-                                        SshTerminalContract.Effect.ShowToast(
-                                                "SSH 鉴权失败，请重新登录"
+                                if (isCurrentAttempt(attemptGeneration)) {
+                                    sendEffect(
+                                            SshTerminalContract.Effect.ShowToast(
+                                                    R.string.terminal_error_authentication
+                                            )
                                         )
-                                )
+                                }
                                 return@launch
                             }
                     if (sessionToken.isBlank() && server.authType != AuthType.GUEST) {
-                        setState { copy(isConnecting = false, error = "无法获取有效认证凭据") }
+                        updateCurrentAttempt(attemptGeneration) {
+                            copy(
+                                    isConnecting = false,
+                                    error = R.string.terminal_error_missing_credential
+                            )
+                        }
                         return@launch
                     }
 
@@ -269,15 +386,11 @@ class SshTerminalViewModel(
 
                     Log.d(TAG, "Preparing terminal WebSocket (authType=$authType)")
 
+                    val attemptSendQueue = Channel<WsOutMessage>(SEND_QUEUE_CAPACITY)
                     try {
                         val wsBlock: suspend DefaultClientWebSocketSession.() -> Unit = {
                             Log.d(TAG, "WebSocket connected")
                             val wsSession = this
-                            withContext(Dispatchers.Main.immediate) {
-                                setState {
-                                    copy(isConnecting = false, isConnected = true, error = null)
-                                }
-                            }
 
                             // 建连后立即发送初始 resize（使用 onSizeChanged 已缓存的实际尺寸）
                             wsSession.send(Frame.Text(resizeMessage(lastCols, lastRows)))
@@ -291,9 +404,10 @@ class SshTerminalViewModel(
                                 }
                             }
 
-                            // 发送协程：从 sendQueue 取出消息发往 WebSocket
+                            // Each handshake owns a fresh queue. No item from an old server or
+                            // retry generation can ever be observed by this sender.
                             val senderJob = launch {
-                                for (msg in sendQueue) {
+                                for (msg in attemptSendQueue) {
                                     if (!isActive) break
                                     when (msg) {
                                         is WsOutMessage.Binary ->
@@ -301,6 +415,18 @@ class SshTerminalViewModel(
                                         is WsOutMessage.Text -> wsSession.send(Frame.Text(msg.text))
                                     }
                                 }
+                            }
+
+                            if (!activateSendQueue(attemptGeneration, attemptSendQueue)) {
+                                throw CancellationException("Superseded terminal connection")
+                            }
+                            withContext(Dispatchers.Main.immediate) {
+                                updateCurrentAttempt(attemptGeneration) {
+                                    copy(isConnecting = false, isConnected = true, error = null)
+                                }
+                            }
+                            if (!isCurrentAttempt(attemptGeneration)) {
+                                throw CancellationException("Superseded terminal connection")
                             }
 
                             val outputPump =
@@ -319,12 +445,16 @@ class SshTerminalViewModel(
                                     }
                                 }
                             } finally {
-                                heartbeatJob.cancel()
-                                senderJob.cancel()
+                                deactivateSendQueue(attemptGeneration, attemptSendQueue)
+                                attemptSendQueue.close()
                                 withContext(NonCancellable) {
+                                    heartbeatJob.cancelAndJoin()
+                                    senderJob.cancelAndJoin()
                                     outputPump.closeAndDrain()
                                     withContext(Dispatchers.Main.immediate) {
-                                        setState { copy(isConnected = false) }
+                                        updateCurrentAttempt(attemptGeneration) {
+                                            copy(isConnected = false)
+                                        }
                                     }
                                 }
                             }
@@ -336,39 +466,95 @@ class SshTerminalViewModel(
                                 authType = authType,
                                 customHeaders = customHeaders,
                                 loggerTag = TAG,
+                                requiresSensitiveTwoFactor = requiresSensitiveTwoFactor,
+                                oneTimeTwoFactorCode = normalizedTwoFactorCode,
                                 block = wsBlock
                         )
                         // 连接正常关闭
-                        sendEffect(SshTerminalContract.Effect.NavigateBack)
+                        if (isCurrentAttempt(attemptGeneration)) {
+                            sendEffect(SshTerminalContract.Effect.NavigateBack)
+                        }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        Log.w(TAG, "WebSocket error: ${e.message}")
+                        Log.w(TAG, "WebSocket failed (${e::class.java.simpleName})")
+                        if (!isCurrentAttempt(attemptGeneration)) return@launch
                         if (e.isSessionAuthError()) {
-                            setState {
-                                copy(isConnecting = false, isConnected = false, error = "鉴权失败，请重新登录")
+                            if (shouldRememberTerminalTwoFactorHint(authType, true)) {
+                                // Compatibility for profiles created before requires2fa was stored:
+                                // the next retry must offer a fresh sensitive-operation code.
+                                passwordHandshakeRequiresTwoFactorHint = true
+                                rememberTwoFactorRequirement(server)
                             }
-                            sendEffect(SshTerminalContract.Effect.ShowToast("SSH 连接被拒绝，请重新登录"))
+                            val message =
+                                    if (requiresSensitiveTwoFactor) {
+                                        R.string.terminal_error_sensitive_2fa
+                                    } else if (authType == AuthType.PASSWORD) {
+                                        R.string.terminal_error_password_rejected
+                                    } else {
+                                        R.string.terminal_error_authentication
+                                    }
+                            updateCurrentAttempt(attemptGeneration) {
+                                copy(isConnecting = false, isConnected = false, error = message)
+                            }
+                            sendEffect(SshTerminalContract.Effect.ShowToast(message))
                         } else {
-                            setState {
+                            updateCurrentAttempt(attemptGeneration) {
                                 copy(
                                         isConnecting = false,
                                         isConnected = false,
-                                        error = e.message ?: "连接失败"
+                                        error = R.string.terminal_error_connection_failed
                                 )
                             }
                             sendEffect(
-                                    SshTerminalContract.Effect.ShowToast("SSH 连接失败: ${e.message}")
+                                    SshTerminalContract.Effect.ShowToast(
+                                            R.string.terminal_error_connection_failed
+                                    )
                             )
                         }
+                    } finally {
+                        deactivateSendQueue(attemptGeneration, attemptSendQueue)
+                        attemptSendQueue.close()
                     }
                 }
+        synchronized(connectionLock) {
+            if (attemptGeneration == connectionGeneration) {
+                wsJob = attemptJob
+            } else {
+                attemptJob.cancel()
+            }
+        }
+        attemptJob.invokeOnCompletion {
+            synchronized(connectionLock) {
+                if (wsJob === attemptJob) wsJob = null
+            }
+        }
+        attemptJob.start()
+    }
+
+    private fun updateCurrentAttempt(
+            attemptGeneration: Long,
+            transform: SshTerminalContract.State.() -> SshTerminalContract.State
+    ) {
+        if (isCurrentAttempt(attemptGeneration)) setState(transform)
+    }
+
+    private suspend fun rememberTwoFactorRequirement(server: ServerInstance) {
+        try {
+            serverRepository.updateRequires2fa(server, true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // A concurrent profile identity change must prevent this old request from updating
+            // the replacement row. Keep only the in-memory compatibility hint for this screen.
+            Log.w(TAG, "Skipped stale 2FA capability update (${e::class.java.simpleName})")
+        }
     }
 
     override fun onDispose() {
         super.onDispose()
+        cancelCurrentConnection()
         terminalBridge.session.finishIfRunning()
-        sendQueue.close()
     }
 
     private fun persistSnippets(snippets: List<TerminalSnippet>) {
@@ -388,20 +574,79 @@ class SshTerminalViewModel(
                     .toString()
 
     private fun enqueueMessage(message: WsOutMessage): Boolean {
-        val result = sendQueue.trySend(message)
+        val (target, result) =
+                synchronized(connectionLock) {
+                    val active = activeSendQueue ?: return false
+                    if (!canEnqueueTerminalMessage(
+                                    currentGeneration = connectionGeneration,
+                                    queueGeneration = active.generation,
+                                    isConnected = currentState.isConnected
+                            )
+                    ) {
+                        return false
+                    }
+                    active to active.channel.trySend(message)
+                }
         if (result.isFailure) {
             Log.e(TAG, "Terminal send queue closed or full; closing connection to preserve order")
-            setState {
-                copy(
-                        isConnecting = false,
-                        isConnected = false,
-                        error = "终端输入缓冲区已满，连接已关闭"
-                )
+            val jobToCancel =
+                    synchronized(connectionLock) {
+                        if (target.generation != connectionGeneration ||
+                                        activeSendQueue !== target
+                        ) {
+                            null
+                        } else {
+                            activeSendQueue = null
+                            target.channel.close()
+                            wsJob
+                        }
+                    }
+            if (jobToCancel != null) {
+                updateCurrentAttempt(target.generation) {
+                    copy(
+                            isConnecting = false,
+                            isConnected = false,
+                            error = R.string.terminal_error_send_buffer_full
+                    )
+                }
+                jobToCancel.cancel()
             }
-            wsJob?.cancel()
             return false
         }
         return true
+    }
+
+    private fun activateSendQueue(generation: Long, channel: Channel<WsOutMessage>): Boolean =
+            synchronized(connectionLock) {
+                if (generation != connectionGeneration) {
+                    false
+                } else {
+                    activeSendQueue = ActiveSendQueue(generation, channel)
+                    true
+                }
+            }
+
+    private fun deactivateSendQueue(generation: Long, channel: Channel<WsOutMessage>) {
+        synchronized(connectionLock) {
+            val active = activeSendQueue
+            if (active?.generation == generation && active.channel === channel) {
+                activeSendQueue = null
+            }
+        }
+    }
+
+    private fun isCurrentAttempt(generation: Long): Boolean =
+            generation == connectionGeneration
+
+    private fun cancelCurrentConnection() {
+        val jobToCancel =
+                synchronized(connectionLock) {
+                    connectionGeneration++
+                    activeSendQueue?.channel?.close()
+                    activeSendQueue = null
+                    wsJob
+                }
+        jobToCancel?.cancel()
     }
 
     // ─── 内部类型 ───
@@ -410,6 +655,11 @@ class SshTerminalViewModel(
         data class Binary(val data: ByteArray) : WsOutMessage
         data class Text(val text: String) : WsOutMessage
     }
+
+    private data class ActiveSendQueue(
+            val generation: Long,
+            val channel: Channel<WsOutMessage>
+    )
 
     /**
      * TerminalSession 客户端桥接器

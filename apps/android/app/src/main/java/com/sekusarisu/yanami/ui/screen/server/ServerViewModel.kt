@@ -226,7 +226,7 @@ class AddServerViewModel(
                                             customHeaders
                                     )
                             AuthType.PASSWORD -> {
-                                val twoFaCode = state.twoFaCode.ifBlank { null }
+                                val twoFaCode = state.twoFaCode.trim().ifBlank { null }
                                 repository.testConnection(
                                         normalizedBaseUrl,
                                         state.username,
@@ -242,7 +242,12 @@ class AddServerViewModel(
                             testResult =
                                     context.getString(R.string.add_server_test_success, version),
                             testError = null,
-                            show2faField = false
+                            show2faField =
+                                    requiresTwoFactorAfterSuccessfulAuthentication(
+                                            authType = state.authType,
+                                            submittedCode = state.twoFaCode,
+                                            previouslyRequired = state.show2faField
+                                    )
                     )
                 }
             } catch (e: Requires2FAException) {
@@ -325,7 +330,12 @@ class AddServerViewModel(
                                 baseUrl = normalizedBaseUrl,
                                 username = state.username.trim(),
                                 password = state.password,
-                                requires2fa = state.show2faField,
+                                requires2fa =
+                                        requiresTwoFactorAfterSuccessfulAuthentication(
+                                                authType = state.authType,
+                                                submittedCode = state.twoFaCode,
+                                                previouslyRequired = state.show2faField
+                                        ),
                                 authType = state.authType,
                                 apiKey = state.apiKey.ifBlank { null },
                                 customHeaders = customHeaders
@@ -333,27 +343,18 @@ class AddServerViewModel(
 
                 if (editingServer != null) {
                     val original = editingServer!!
-                    val authChanged =
-                            original.baseUrl != normalizedInstance.baseUrl ||
-                                    original.username != normalizedInstance.username ||
-                                    original.password != normalizedInstance.password ||
-                                    original.authType != normalizedInstance.authType ||
-                                    original.apiKey != normalizedInstance.apiKey ||
-                                    original.customHeaders != normalizedInstance.customHeaders
-
                     val updated =
                             original.copy(
                                     name = normalizedInstance.name,
                                     baseUrl = normalizedInstance.baseUrl,
                                     username = normalizedInstance.username,
                                     password = normalizedInstance.password,
-                                    sessionToken = if (authChanged) null else original.sessionToken,
                                     requires2fa = normalizedInstance.requires2fa,
                                     authType = normalizedInstance.authType,
                                     apiKey = normalizedInstance.apiKey,
                                     customHeaders = normalizedInstance.customHeaders
                             )
-                    repository.update(updated)
+                    repository.update(updated, expectedAuthentication = original)
                     setState { copy(isSaving = false) }
                     sendEffect(ServerContract.Effect.ServerUpdated)
                 } else {
@@ -363,10 +364,13 @@ class AddServerViewModel(
                     // 尝试登录获取 session_token 并持久化（API_KEY 模式下设置 session）
                     try {
                         val savedInstance = normalizedInstance.copy(id = id)
-                        val twoFaCode = state.twoFaCode.ifBlank { null }
+                        val twoFaCode = state.twoFaCode.trim().ifBlank { null }
                         repository.login(savedInstance, twoFaCode)
                     } catch (e: Exception) {
-                        android.util.Log.w("AddServerVM", "Initial login failed: ${e.message}")
+                        android.util.Log.w(
+                                "AddServerVM",
+                                "Initial login failed (${e::class.java.simpleName})"
+                        )
                     }
 
                     setState { copy(isSaving = false) }

@@ -281,26 +281,28 @@ private struct PercentLoadChart: View {
 
             Chart {
                 ForEach(records) { record in
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("CPU", record.cpu),
-                        series: .value("Metric", "CPU")
-                    )
-                    .foregroundStyle(.blue)
+                    if let timestamp = parseISO8601(record.time) {
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("CPU", record.cpu),
+                            series: .value("Metric", "CPU")
+                        )
+                        .foregroundStyle(.blue)
 
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("RAM", record.ramPercent),
-                        series: .value("Metric", "RAM")
-                    )
-                    .foregroundStyle(.green)
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("RAM", record.ramPercent),
+                            series: .value("Metric", "RAM")
+                        )
+                        .foregroundStyle(.green)
 
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("Disk", record.diskPercent),
-                        series: .value("Metric", "Disk")
-                    )
-                    .foregroundStyle(.purple)
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("Disk", record.diskPercent),
+                            series: .value("Metric", "Disk")
+                        )
+                        .foregroundStyle(.purple)
+                    }
                 }
             }
             .frame(height: 170)
@@ -351,19 +353,21 @@ private struct NetworkLoadChart: View {
 
             Chart {
                 ForEach(records) { record in
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("Download", Double(record.netIn)),
-                        series: .value("Metric", "Download")
-                    )
-                    .foregroundStyle(.blue)
+                    if let timestamp = parseISO8601(record.time) {
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("Download", Double(record.netIn)),
+                            series: .value("Metric", "Download")
+                        )
+                        .foregroundStyle(.blue)
 
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("Upload", Double(record.netOut)),
-                        series: .value("Metric", "Upload")
-                    )
-                    .foregroundStyle(.orange)
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("Upload", Double(record.netOut)),
+                            series: .value("Metric", "Upload")
+                        )
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
             .frame(height: 155)
@@ -413,19 +417,21 @@ private struct TrafficLoadChart: View {
 
             Chart {
                 ForEach(records) { record in
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("Download Traffic", Double(record.trafficDown)),
-                        series: .value("Metric", "Download Traffic")
-                    )
-                    .foregroundStyle(.blue)
+                    if let timestamp = parseISO8601(record.time) {
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("Download Traffic", Double(record.trafficDown)),
+                            series: .value("Metric", "Download Traffic")
+                        )
+                        .foregroundStyle(.blue)
 
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("Upload Traffic", Double(record.trafficUp)),
-                        series: .value("Metric", "Upload Traffic")
-                    )
-                    .foregroundStyle(.orange)
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("Upload Traffic", Double(record.trafficUp)),
+                            series: .value("Metric", "Upload Traffic")
+                        )
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
             .frame(height: 155)
@@ -476,26 +482,28 @@ private struct CountLoadChart: View {
 
             Chart {
                 ForEach(records) { record in
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("TCP", Double(record.connections)),
-                        series: .value("Metric", "TCP")
-                    )
-                    .foregroundStyle(.blue)
+                    if let timestamp = parseISO8601(record.time) {
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("TCP", Double(record.connections)),
+                            series: .value("Metric", "TCP")
+                        )
+                        .foregroundStyle(.blue)
 
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("UDP", Double(record.connectionsUdp)),
-                        series: .value("Metric", "UDP")
-                    )
-                    .foregroundStyle(.cyan)
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("UDP", Double(record.connectionsUdp)),
+                            series: .value("Metric", "UDP")
+                        )
+                        .foregroundStyle(.cyan)
 
-                    LineMark(
-                        x: .value("Time", parseISO8601(record.time)),
-                        y: .value("Process", Double(record.process)),
-                        series: .value("Metric", "Process")
-                    )
-                    .foregroundStyle(.red)
+                        LineMark(
+                            x: .value("Time", timestamp),
+                            y: .value("Process", Double(record.process)),
+                            series: .value("Metric", "Process")
+                        )
+                        .foregroundStyle(.red)
+                    }
                 }
             }
             .frame(height: 155)
@@ -596,11 +604,13 @@ private struct PingChart: View {
     var body: some View {
         Chart {
             ForEach(records) { record in
-                LineMark(
-                    x: .value("Time", parseISO8601(record.time)),
-                    y: .value("Latency", record.value)
-                )
-                .foregroundStyle(.orange)
+                if let timestamp = parseISO8601(record.time) {
+                    LineMark(
+                        x: .value("Time", timestamp),
+                        y: .value("Latency", record.value)
+                    )
+                    .foregroundStyle(.orange)
+                }
             }
         }
         .chartXAxis(.hidden)
@@ -612,17 +622,32 @@ private struct PingChart: View {
 }
 
 private func formatLoadAxisDate(_ date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.dateFormat = "MM-dd HH:mm:ss"
-    return formatter.string(from: date)
+    ChartDateFormatters.axis.string(from: date)
 }
 
-private func parseISO8601(_ string: String) -> Date {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = formatter.date(from: string) { return date }
-    formatter.formatOptions = [.withInternetDateTime]
-    return formatter.date(from: string) ?? Date()
+private func parseISO8601(_ string: String) -> Date? {
+    ChartDateFormatters.isoFractional.date(from: string)
+        ?? ChartDateFormatters.iso.date(from: string)
+}
+
+private enum ChartDateFormatters {
+    static let isoFractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static let iso: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    static let axis: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss"
+        return formatter
+    }()
 }
 
 private extension View {

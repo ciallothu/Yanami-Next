@@ -38,6 +38,7 @@ class UserPreferencesRepository(private val context: Context) {
         private val AUTO_ENTER_NODELIST_KEY = booleanPreferencesKey("auto_enter_nodelist")
         private val CHART_ANIMATION_KEY = booleanPreferencesKey("chart_animation")
         private val BIOMETRIC_ENABLED_KEY = booleanPreferencesKey("biometric_enabled")
+        private val BIOMETRIC_ENVELOPE_KEY = stringPreferencesKey("biometric_envelope_v1")
         private val MASK_IP_ENABLED_KEY = booleanPreferencesKey("mask_ip_enabled")
         private val TERMINAL_SNIPPETS_KEY = stringPreferencesKey("terminal_snippets")
         const val DEFAULT_TERMINAL_FONT_SIZE = 20
@@ -56,6 +57,7 @@ class UserPreferencesRepository(private val context: Context) {
                         autoEnterNodeList = prefs[AUTO_ENTER_NODELIST_KEY] ?: false,
                         chartAnimationEnabled = prefs[CHART_ANIMATION_KEY] ?: true,
                         biometricEnabled = prefs[BIOMETRIC_ENABLED_KEY] ?: false,
+                        biometricEnvelope = prefs[BIOMETRIC_ENVELOPE_KEY],
                         maskIpEnabled = prefs[MASK_IP_ENABLED_KEY] ?: false
                 )
             }
@@ -114,9 +116,19 @@ class UserPreferencesRepository(private val context: Context) {
         context.dataStore.edit { it[CHART_ANIMATION_KEY] = enabled }
     }
 
-    /** 设置生物识别锁 */
-    suspend fun setBiometricEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[BIOMETRIC_ENABLED_KEY] = enabled }
+    /** Atomically updates the app-lock flag and its auth-bound verifier envelope. */
+    suspend fun setBiometricLock(enabled: Boolean, envelope: String?) {
+        require(!enabled || !envelope.isNullOrBlank()) {
+            "An enabled biometric lock requires a verifier envelope"
+        }
+        context.dataStore.edit { prefs ->
+            prefs[BIOMETRIC_ENABLED_KEY] = enabled
+            if (enabled) {
+                prefs[BIOMETRIC_ENVELOPE_KEY] = envelope!!
+            } else {
+                prefs.remove(BIOMETRIC_ENVELOPE_KEY)
+            }
+        }
     }
 
     /** Hide the identifying suffix of node IP addresses throughout the app. */
@@ -137,5 +149,10 @@ data class UserPreferences(
         val autoEnterNodeList: Boolean = false,
         val chartAnimationEnabled: Boolean = true,
         val biometricEnabled: Boolean = false,
+        val biometricEnvelope: String? = null,
         val maskIpEnabled: Boolean = false
-)
+) {
+    /** Treat either persisted component as locked so partial/tampered state fails closed. */
+    val biometricLockRequired: Boolean
+        get() = biometricEnabled || biometricEnvelope != null
+}

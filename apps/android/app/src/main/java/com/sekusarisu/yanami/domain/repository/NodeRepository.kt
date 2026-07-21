@@ -25,7 +25,8 @@ interface NodeRepository {
                 baseUrl: String,
                 sessionToken: String,
                 authType: AuthType,
-                customHeaders: List<CustomHeader>
+                customHeaders: List<CustomHeader>,
+                previousNodes: List<Node> = emptyList()
         ): List<Node>
 
         /**

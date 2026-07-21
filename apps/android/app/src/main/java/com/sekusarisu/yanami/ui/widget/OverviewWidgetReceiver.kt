@@ -16,7 +16,7 @@ class OverviewWidgetReceiver : GlanceAppWidgetReceiver() {
         appWidgetIds: IntArray
     ) {
         super.onUpdate(context, appWidgetManager, appWidgetIds)
-        WidgetUpdateWorker.enqueue(context, immediate = true)
+        WidgetUpdateWorker.enqueueImmediate(context)
     }
 
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {

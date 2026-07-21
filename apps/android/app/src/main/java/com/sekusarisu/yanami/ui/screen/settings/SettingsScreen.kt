@@ -54,6 +54,7 @@ import com.sekusarisu.yanami.ui.screen.AdaptiveContentPane
 import com.sekusarisu.yanami.ui.screen.rememberAdaptiveLayoutInfo
 import com.sekusarisu.yanami.ui.screen.soundClick
 import com.sekusarisu.yanami.ui.theme.ThemeColor
+import java.util.Locale
 
 class SettingsScreen : Screen {
 
@@ -179,7 +180,12 @@ private fun SettingsControls(state: SettingsState, onEvent: (SettingsEvent) -> U
     ) {
         Column {
             Text(
-                    text = String.format("%d%%", (state.fontScale * 100).toInt()),
+                    text =
+                            String.format(
+                                    Locale.getDefault(),
+                                    "%d%%",
+                                    (state.fontScale * 100).toInt()
+                            ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
             )

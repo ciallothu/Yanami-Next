@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -324,7 +325,7 @@ internal fun ChartSectionHeader(
         showRealtime: Boolean = false
 ) {
     Surface(
-            modifier = Modifier.height(60.dp).fillMaxWidth(),
+            modifier = Modifier.heightIn(min = 60.dp).fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f),
             tonalElevation = 1.dp
