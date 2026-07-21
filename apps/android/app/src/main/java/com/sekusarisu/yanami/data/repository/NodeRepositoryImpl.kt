@@ -3,10 +3,12 @@ package com.sekusarisu.yanami.data.repository
 import com.sekusarisu.yanami.data.remote.KomariRpcService
 import com.sekusarisu.yanami.data.remote.dto.NodeInfoDto
 import com.sekusarisu.yanami.data.remote.dto.NodeStatusDto
+import com.sekusarisu.yanami.data.remote.dto.PingRecordsResponseDto
 import com.sekusarisu.yanami.domain.model.AuthType
 import com.sekusarisu.yanami.domain.model.CustomHeader
 import com.sekusarisu.yanami.domain.model.LoadRecord
 import com.sekusarisu.yanami.domain.model.Node
+import com.sekusarisu.yanami.domain.model.NodePingHistory
 import com.sekusarisu.yanami.domain.model.PingRecord
 import com.sekusarisu.yanami.domain.model.PingTask
 import com.sekusarisu.yanami.domain.model.resetAwareCounterDelta
@@ -415,6 +417,26 @@ class NodeRepositoryImpl(private val rpcService: KomariRpcService) : NodeReposit
         }
     }
 
+    override suspend fun getNodePingHistory(
+            baseUrl: String,
+            sessionToken: String,
+            uuid: String,
+            hours: Int,
+            authType: AuthType,
+            customHeaders: List<CustomHeader>
+    ): NodePingHistory {
+        val response =
+                rpcService.getNodePingRecords(
+                        baseUrl = baseUrl,
+                        sessionToken = sessionToken,
+                        uuid = uuid,
+                        hours = hours,
+                        authType = authType,
+                        customHeaders = customHeaders.toList()
+                )
+        return response.toNodePingHistory(uuid)
+    }
+
     override fun observeNodeStatus(
             baseUrl: String,
             sessionToken: String,
@@ -527,40 +549,229 @@ class NodeRepositoryImpl(private val rpcService: KomariRpcService) : NodeReposit
                             NodeDetailWsEvent.LoadRecords(mapped)
                         }
                         is KomariRpcService.KomariWsEvent.PingRecords -> {
-                            val tasks =
-                                    event.records.tasks.map { dto ->
-                                        PingTask(
-                                                id = dto.id,
-                                                name = dto.name,
-                                                interval = dto.interval,
-                                                min = dto.min,
-                                                max = dto.max,
-                                                avg = dto.avg,
-                                                loss =  dto.loss,
-                                                latest = dto.latest,
-                                                p50 = dto.p50,
-                                                p99 = dto.p99
-                                        )
-                                    }
-
-                            val taskNameMap = tasks.associate { it.id to it.name }
-
-                            val nodeRecords = event.records.records.filter { it.client == uuid }
-                            val mapped =
-                                    nodeRecords.map { dto ->
-                                        PingRecord(
-                                                taskId = dto.taskId,
-                                                taskName = taskNameMap[dto.taskId]
-                                                                ?: "Task ${dto.taskId}",
-                                                time = dto.time,
-                                                value = dto.value
-                                        )
-                                    }
-
-                            NodeDetailWsEvent.PingRecords(tasks, mapped)
+                            val history = event.records.toNodePingHistory(uuid)
+                            NodeDetailWsEvent.PingRecords(history.tasks, history.records)
                         }
                     }
                 }
     }
 
 }
+
+/**
+ * Maps only records that belong to the requested node and one of the node-bound tasks returned by
+ * Komari. Task statistics are calculated by Komari before record downsampling, so they remain the
+ * authoritative source for exact loss, averages, percentiles, and fluctuation.
+ */
+internal fun PingRecordsResponseDto.toNodePingHistory(uuid: String): NodePingHistory {
+    val nodeRecords =
+            records.mapNotNull { dto ->
+                val value = dto.value
+                if (dto.client != uuid ||
+                                dto.time.isBlank() ||
+                                value == null ||
+                                !value.isFinite() ||
+                                (value >= 0.0 && value > Int.MAX_VALUE.toDouble())
+                ) {
+                    null
+                } else {
+                    ValidPingRecord(
+                            taskId = dto.taskId,
+                            time = dto.time,
+                            value = value
+                    )
+                }
+            }
+    val nodeRecordsByTaskId = nodeRecords.groupBy { it.taskId }
+    val tasks =
+            tasks.asSequence()
+                    .filter { it.id > 0 }
+                    .distinctBy { it.id }
+                    .map { dto ->
+                        val legacyRecords = nodeRecordsByTaskId[dto.id].orEmpty()
+                        val serverLoss = dto.loss.validPercentOrNull()
+                        val serverTotal = dto.total?.takeIf { it >= 0 }
+                        val serverLatest = dto.latest.nonNegativeFiniteOrNull()
+                        val serverMin = dto.min.nonNegativeFiniteOrNull()
+                        val serverMax = dto.max.nonNegativeFiniteOrNull()
+                        val serverAverage = dto.avg.nonNegativeFiniteOrNull()
+                        val serverP50 = dto.p50.nonNegativeFiniteOrNull()
+                        val serverP99 = dto.p99.nonNegativeFiniteOrNull()
+                        val serverHasSuccessfulSamples =
+                                serverTotal != null &&
+                                        serverTotal > 0 &&
+                                        serverLoss != null &&
+                                        serverLoss < 100.0
+                        val serverSummaryIsUsable =
+                                serverTotal != null &&
+                                        serverLoss != null &&
+                                        when {
+                                            serverTotal == 0 ->
+                                                    serverLoss == 0.0 && legacyRecords.isEmpty()
+                                            serverLoss == 100.0 -> true
+                                            else -> serverHasSuccessfulSamples
+                                        }
+                        // Total/loss describe the complete pre-downsampling window and therefore
+                        // decide summary provenance together. Optional latency fields remain null
+                        // individually instead of replacing an authoritative denominator with a
+                        // calculation over downsampled records.
+                        val recordFallback =
+                                if (!serverSummaryIsUsable && legacyRecords.isNotEmpty()) {
+                                    calculatePingStatistics(legacyRecords)
+                                } else {
+                                    null
+                                }
+                        PingTask(
+                                id = dto.id,
+                                name = dto.name.trim().ifBlank { "Task ${dto.id}" },
+                                interval = dto.interval.coerceAtLeast(0),
+                                min =
+                                        recordFallback?.min
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) serverMin
+                                                else null,
+                                max =
+                                        recordFallback?.max
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) serverMax
+                                                else null,
+                                avg =
+                                        recordFallback?.avg
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) serverAverage
+                                                else null,
+                                loss =
+                                        recordFallback?.loss
+                                                ?: if (serverSummaryIsUsable) serverLoss else null,
+                                latest =
+                                        recordFallback?.latest
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) serverLatest
+                                                else null,
+                                p50 =
+                                        recordFallback?.p50
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) serverP50
+                                                else null,
+                                p99 =
+                                        recordFallback?.p99
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) serverP99
+                                                else null,
+                                total =
+                                        recordFallback?.total
+                                                ?: if (serverSummaryIsUsable) serverTotal else null,
+                                jitterRatio =
+                                        recordFallback?.jitterRatio
+                                                ?: if (serverSummaryIsUsable &&
+                                                                serverHasSuccessfulSamples
+                                                ) {
+                                                    dto.p99p50Ratio.nonNegativeFiniteOrNull()
+                                                } else null,
+                                statisticsAreServerCalculated = serverSummaryIsUsable,
+                                statisticsAreAvailable =
+                                        serverSummaryIsUsable || recordFallback != null
+                        )
+                    }
+                    .toList()
+    val taskNameById = tasks.associate { it.id to it.name }
+    val records =
+            nodeRecords.asSequence()
+                    .filter { it.taskId in taskNameById }
+                    .map { dto ->
+                        PingRecord(
+                                taskId = dto.taskId,
+                                taskName = taskNameById.getValue(dto.taskId),
+                                time = dto.time,
+                                value = dto.value
+                        )
+                    }
+                    .toList()
+    return NodePingHistory(tasks = tasks, records = records)
+}
+
+private data class ValidPingRecord(
+        val taskId: Int,
+        val time: String,
+        val value: Double
+)
+
+private data class PingStatistics(
+        val total: Int,
+        val latest: Double?,
+        val min: Double?,
+        val max: Double?,
+        val avg: Double?,
+        val loss: Double,
+        val p50: Double?,
+        val p99: Double?,
+        val jitterRatio: Double?
+)
+
+/** Compatibility fallback when a server omits or corrupts the authoritative total/loss pair. */
+private fun calculatePingStatistics(records: List<ValidPingRecord>): PingStatistics {
+    val successful = records.filter { it.value >= 0.0 }
+    // Komari's record model stores integer milliseconds. Mirror common.record.go exactly for
+    // compatibility fallbacks: integer average and rounded, linearly interpolated percentiles.
+    val successfulValues = successful.map { it.value.toInt() }
+    val sortedValues = successfulValues.sorted()
+    val p50 = sortedValues.takeIf { it.isNotEmpty() }?.let { percentile(it, 0.50) }
+    val p99 = sortedValues.takeIf { it.isNotEmpty() }?.let { percentile(it, 0.99) }
+    val sum = successfulValues.fold(0L) { accumulator, value -> accumulator + value }
+    return PingStatistics(
+            total = records.size,
+            latest = successful.maxByOrNull { it.time }?.value?.toInt()?.toDouble(),
+            min =
+                    successfulValues.takeIf { it.isNotEmpty() }
+                            ?.let(::komariMinimum)
+                            ?.toDouble(),
+            max = successfulValues.maxOrNull()?.toDouble(),
+            avg =
+                    successfulValues.takeIf { it.isNotEmpty() }
+                            ?.let { (sum / it.size).toDouble() },
+            loss =
+                    if (records.isEmpty()) 0.0
+                    else records.count { it.value < 0.0 }.toDouble() / records.size * 100.0,
+            p50 = p50,
+            p99 = p99,
+            jitterRatio =
+                    if (p50 != null && p99 != null) {
+                        if (p50 > 0.0 && p99 >= p50) {
+                            (p99 - p50) / p50.coerceIn(10.0, 50.0)
+                        } else 0.0
+                    } else null
+    )
+}
+
+private fun percentile(sortedValues: List<Int>, percentile: Double): Double {
+    if (sortedValues.isEmpty()) return 0.0
+    if (sortedValues.size == 1) return sortedValues.single().toDouble()
+    val position = (sortedValues.lastIndex * percentile.coerceIn(0.0, 1.0))
+    val lowerIndex = kotlin.math.floor(position).toInt()
+    val upperIndex = kotlin.math.ceil(position).toInt()
+    if (lowerIndex == upperIndex) return sortedValues[lowerIndex].toDouble()
+    val fraction = position - lowerIndex
+    val interpolated =
+            sortedValues[lowerIndex] +
+                    (sortedValues[upperIndex] - sortedValues[lowerIndex]) * fraction
+    return kotlin.math.floor(interpolated + 0.5)
+}
+
+/** Mirrors Komari's `minLat == 0 || value < minLat` loop, including zero-latency handling. */
+private fun komariMinimum(values: List<Int>): Int {
+    var minimum = 0
+    values.forEach { value -> if (minimum == 0 || value < minimum) minimum = value }
+    return minimum
+}
+
+private fun Double?.nonNegativeFiniteOrNull(): Double? =
+        this?.takeIf { it.isFinite() && it >= 0.0 }
+
+private fun Double?.validPercentOrNull(): Double? =
+        this?.takeIf { it.isFinite() && it in 0.0..100.0 }

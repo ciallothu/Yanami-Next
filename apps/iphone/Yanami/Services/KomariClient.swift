@@ -123,11 +123,20 @@ struct KomariClient {
             token: token,
             responseType: PingRecordsPayload.self
         )
-        let tasks = result.tasks.map { $0.toDomain() }
-        let names = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0.name) })
+        var seenTaskIDs = Set<Int>()
+        let tasks = result.tasks
+            .map { $0.toDomain() }
+            .filter { seenTaskIDs.insert($0.id).inserted }
+        let names = tasks.reduce(into: [Int: String]()) { names, task in
+            names[task.id] = task.name
+        }
         let records = result.records
             .filter { $0.client == uuid }
-            .map { $0.toDomain(taskName: names[$0.taskId] ?? "Task \($0.taskId)") }
+            .sorted {
+                if $0.time == $1.time { return $0.taskId < $1.taskId }
+                return $0.time < $1.time
+            }
+            .compactMap { $0.toDomain(taskName: names[$0.taskId] ?? "Task \($0.taskId)") }
         return (tasks, records)
     }
 
@@ -714,6 +723,7 @@ private struct PingTaskPayload: Decodable {
     let id: Int
     let name: String
     let interval: Int?
+    let total: Int?
     let latest: Double?
     let min: Double?
     let max: Double?
@@ -721,19 +731,22 @@ private struct PingTaskPayload: Decodable {
     let loss: Double?
     let p50: Double?
     let p99: Double?
+    let p99P50Ratio: Double?
 
     func toDomain() -> PingTask {
         PingTask(
             id: id,
             name: name,
             interval: interval ?? 0,
-            latest: latest ?? 0,
-            min: min ?? 0,
-            max: max ?? 0,
-            avg: avg ?? 0,
-            loss: loss ?? 0,
-            p50: p50 ?? 0,
-            p99: p99 ?? 0
+            sampleCount: max(total ?? 0, 0),
+            latest: latest,
+            min: min,
+            max: max,
+            avg: avg,
+            loss: loss,
+            p50: p50,
+            p99: p99,
+            p99P50Ratio: p99P50Ratio
         )
     }
 }
@@ -744,8 +757,9 @@ private struct PingRecordPayload: Decodable {
     let value: Double?
     let client: String
 
-    func toDomain(taskName: String) -> PingRecord {
-        PingRecord(taskId: taskId, taskName: taskName, time: time, value: value ?? 0)
+    func toDomain(taskName: String) -> PingRecord? {
+        guard let value, value.isFinite else { return nil }
+        return PingRecord(taskId: taskId, taskName: taskName, time: time, value: value)
     }
 }
 

@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,6 +39,7 @@ import com.patrykandpatrick.vico.compose.cartesian.rememberCartesianChart
 import com.patrykandpatrick.vico.compose.cartesian.rememberVicoScrollState
 import com.patrykandpatrick.vico.compose.cartesian.rememberVicoZoomState
 import com.patrykandpatrick.vico.compose.common.Fill
+import com.patrykandpatrick.vico.compose.common.component.rememberShapeComponent
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.PingTask
 import java.time.Instant
@@ -48,11 +50,33 @@ internal fun PingTaskChart(
         task: PingTask,
         values: List<Double>,
         times: List<String>,
+        segments: List<NodeDetailContract.PingChartSegment> =
+                listOf(
+                        NodeDetailContract.PingChartSegment(
+                                xValues = values.indices.map(Int::toDouble),
+                                values = values
+                        )
+                ).filter { it.values.isNotEmpty() },
+        allTimes: List<String> = times,
+        packetLossXValues: List<Double> = emptyList(),
+        totalSamples: Int = values.size,
+        packetLossSamples: Int = 0,
         chartAnimationEnabled: Boolean = true
 ) {
     val pointCount = minOf(values.size, times.size)
     val chartValues = remember(values, times) { values.take(pointCount) }
     val chartTimes = remember(values, times) { times.take(pointCount) }
+    val chartSegments =
+            remember(segments) {
+                segments.filter { segment ->
+                    segment.xValues.size == segment.values.size &&
+                            segment.values.isNotEmpty() &&
+                            segment.values.all { it.isFinite() && it >= 0.0 }
+                }
+            }
+    val chartAllTimes = remember(allTimes) { allTimes.toList() }
+    val chartLossXValues = remember(packetLossXValues) { packetLossXValues.toList() }
+    val lossMarkerY = remember(chartValues) { chartValues.minOrNull() ?: 0.0 }
 
     Column {
         Row(
@@ -67,36 +91,65 @@ internal fun PingTaskChart(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                    text = "%.0fms".format(task.latest) + " / " + "%.1f%%".format(task.loss),
+                    text =
+                            (task.latest
+                                    ?.takeIf {
+                                        it >= 0.0 && task.loss?.let { loss -> loss < 100.0 } != false
+                                    }
+                                    ?.let { "%.0fms".format(it) }
+                                    ?: "—") +
+                                    " / " +
+                                    (task.loss?.let { "%.1f%%".format(it) } ?: "—"),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Spacer(modifier = Modifier.height(4.dp))
 
-        if (chartValues.size >= 2) {
+        if (chartSegments.isNotEmpty() || chartLossXValues.isNotEmpty()) {
             val modelProducer = remember { CartesianChartModelProducer() }
-            LaunchedEffect(chartValues) {
-                modelProducer.runTransaction { lineSeries { series(chartValues) } }
+            LaunchedEffect(chartSegments, chartLossXValues, lossMarkerY) {
+                modelProducer.runTransaction {
+                    lineSeries {
+                        chartSegments.forEach { segment ->
+                            series(segment.xValues, segment.values)
+                        }
+                        if (chartLossXValues.isNotEmpty()) {
+                            series(
+                                    chartLossXValues,
+                                    List(chartLossXValues.size) { lossMarkerY }
+                            )
+                        }
+                    }
+                }
             }
 
             val yAxisFormatter = remember {
                 CartesianValueFormatter { _, value, _ -> "%.0fms".format(value) }
             }
             val xAxisFormatter =
-                    remember(chartTimes) {
+                    remember(chartAllTimes) {
                         CartesianValueFormatter { _, value, _ ->
-                            val index = value.toInt().coerceIn(chartTimes.indices)
-                            parseTimeLabel(chartTimes[index])
+                            if (chartAllTimes.isEmpty()) return@CartesianValueFormatter ""
+                            val index = value.toInt().coerceIn(chartAllTimes.indices)
+                            parseTimeLabel(chartAllTimes[index])
                         }
                     }
 
-            val pingLine = rememberThemedLine(MaterialTheme.colorScheme.tertiary)
+            val pingLine = rememberPingLine(MaterialTheme.colorScheme.tertiary)
+            val lossLine = rememberLossMarkerLine(MaterialTheme.colorScheme.error)
+            val lineStyles =
+                    remember(pingLine, lossLine, chartSegments.size, chartLossXValues) {
+                        buildList {
+                            repeat(chartSegments.size) { add(pingLine) }
+                            if (chartLossXValues.isNotEmpty()) add(lossLine)
+                        }
+                    }
             CartesianChartHost(
                     chart =
                             rememberCartesianChart(
                                     rememberLineCartesianLayer(
-                                            LineCartesianLayer.LineProvider.series(pingLine)
+                                            LineCartesianLayer.LineProvider.series(lineStyles)
                                     ),
                                     startAxis =
                                             VerticalAxis.rememberStart(
@@ -121,8 +174,24 @@ internal fun PingTaskChart(
                             } else null,
                     animateIn = chartAnimationEnabled
             )
+            if (chartLossXValues.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                        text = stringResource(R.string.node_detail_packet_loss_marker),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                )
+            }
         } else {
-            ChartEmptyState(height = 100.dp)
+            ChartEmptyState(
+                    height = 100.dp,
+                    message =
+                            if (totalSamples > 0 && packetLossSamples == totalSamples) {
+                                stringResource(R.string.node_detail_all_samples_lost)
+                            } else {
+                                stringResource(R.string.node_detail_insufficient_data)
+                            }
+            )
         }
     }
 }
@@ -434,13 +503,16 @@ internal fun NetworkChartCard(
 }
 
 @Composable
-private fun ChartEmptyState(height: androidx.compose.ui.unit.Dp = 80.dp) {
+private fun ChartEmptyState(
+        height: androidx.compose.ui.unit.Dp = 80.dp,
+        message: String? = null
+) {
     Box(
             modifier = Modifier.fillMaxWidth().height(height),
             contentAlignment = Alignment.Center
     ) {
         Text(
-                text = stringResource(R.string.node_detail_insufficient_data),
+                text = message ?: stringResource(R.string.node_detail_insufficient_data),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -460,3 +532,30 @@ private fun rememberThemedLine(color: Color): LineCartesianLayer.Line =
                                 )
                         )
         )
+
+@Composable
+private fun rememberPingLine(color: Color): LineCartesianLayer.Line {
+    val point = rememberShapeComponent(Fill(color), CircleShape)
+    return LineCartesianLayer.rememberLine(
+            fill = LineCartesianLayer.LineFill.single(Fill(color)),
+            areaFill = null,
+            pointProvider =
+                    LineCartesianLayer.PointProvider.single(
+                            LineCartesianLayer.Point(point, size = 5.dp)
+                    )
+    )
+}
+
+@Composable
+private fun rememberLossMarkerLine(color: Color): LineCartesianLayer.Line {
+    val point = rememberShapeComponent(Fill(color), CircleShape)
+    return LineCartesianLayer.rememberLine(
+            fill = LineCartesianLayer.LineFill.single(Fill(Color.Transparent)),
+            stroke = LineCartesianLayer.LineStroke.Continuous(thickness = 0.dp),
+            areaFill = null,
+            pointProvider =
+                    LineCartesianLayer.PointProvider.single(
+                            LineCartesianLayer.Point(point, size = 7.dp)
+                    )
+    )
+}

@@ -37,20 +37,45 @@ jobs:
           fi
           git fetch --no-tags origin main
           test "$(git rev-parse origin/main)" = "$GITHUB_SHA"
-          grep -Fq "MARKETING_VERSION = ${VERSION};" apps/iphone/Yanami.xcodeproj/project.pbxproj
+          test "$(grep -Ec '^[[:space:]]*MARKETING_VERSION = ' apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
+          test "$(grep -Fc "MARKETING_VERSION = ${VERSION};" apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
           BUILD_NUMBER="$(tr -d '[:space:]' < VERSION_CODE)"
+          [[ "$BUILD_NUMBER" =~ ^[0-9]{1,10}$ ]]
           [[ "$VERSION" =~ ^([0-9]+)\.([0-9]{1,2})\.([0-9]{1,2})$ ]]
-          EXPECTED_BUILD_NUMBER="$((
+          BASE_BUILD_NUMBER="$((
             10#${BASH_REMATCH[1]} * 1000000 +
             10#${BASH_REMATCH[2]} * 10000 +
             10#${BASH_REMATCH[3]} * 100
           ))"
-          test "$BUILD_NUMBER" = "$EXPECTED_BUILD_NUMBER"
-          grep -Fq "CURRENT_PROJECT_VERSION = ${BUILD_NUMBER};" apps/iphone/Yanami.xcodeproj/project.pbxproj
+          BUILD_NUMBER_VALUE="$((10#$BUILD_NUMBER))"
+          test "$BUILD_NUMBER_VALUE" -ge "$BASE_BUILD_NUMBER"
+          test "$BUILD_NUMBER_VALUE" -lt "$((BASE_BUILD_NUMBER + 100))"
+          test "$(grep -Ec '^[[:space:]]*CURRENT_PROJECT_VERSION = ' apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
+          test "$(grep -Fc "CURRENT_PROJECT_VERSION = ${BUILD_NUMBER};" apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
           test "$(jq -r '.versionName' docs/update.json)" = "$VERSION"
           test "$(jq -r '.versionCode' docs/update.json)" = "$BUILD_NUMBER"
           test -f ".github/release-notes/v${VERSION}.md"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Require an unused release entry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set +e
+          RESPONSE="$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" 2>&1)"
+          STATUS=$?
+          set -e
+          if [[ "$STATUS" -eq 0 ]]; then
+            echo "Release v${VERSION} already exists; refusing an in-place asset overwrite." >&2
+            exit 1
+          fi
+          if ! grep -Eq 'HTTP[^0-9]*404|\(HTTP 404\)' <<<"$RESPONSE"; then
+            printf '%s\n' "$RESPONSE" >&2
+            echo "Could not prove that release v${VERSION} is absent." >&2
+            exit 1
+          fi
 
   android:
     name: Signed Android release
@@ -106,7 +131,9 @@ jobs:
       - name: Verify APK signatures
         env:
           EXPECTED_CERT_SHA256: 3D79E7323B0482915843F306E3F8B5F987DE06CDE9A1FF0B8736D8C1095BCFF1
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
+          BUILD_NUMBER="$(tr -d '[:space:]' < VERSION_CODE)"
           for apk in apps/android/app/build/outputs/apk/release/*.apk; do
             "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
             ACTUAL_CERT_SHA256="$(
@@ -116,6 +143,11 @@ jobs:
                 tr '[:lower:]' '[:upper:]'
             )"
             test "$ACTUAL_CERT_SHA256" = "$EXPECTED_CERT_SHA256"
+            BADGING="$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")"
+            grep -Fq "versionCode='${BUILD_NUMBER}'" <<<"$BADGING"
+            grep -Fq "versionName='${VERSION}'" <<<"$BADGING"
+            grep -Fq "package: name='com.sekusarisu.yanami'" <<<"$BADGING"
+            grep -Fq "application-label:'Yanami Next'" <<<"$BADGING"
           done
 
       - name: Prepare Android assets
@@ -184,6 +216,12 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
+          APP_INFO="build/ios/Build/Products/Release-iphoneos/Yanami.app/Info.plist"
+          BUILD_NUMBER="$(tr -d '[:space:]' < VERSION_CODE)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_INFO")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_INFO")" = "$BUILD_NUMBER"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_INFO")" = "Yanami Next"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_INFO")" = "com.sekusarisu.yanami.ios"
           mkdir -p release-assets/iphone/Payload
           ditto "build/ios/Build/Products/Release-iphoneos/Yanami.app" \
             "release-assets/iphone/Payload/Yanami Next.app"
@@ -219,13 +257,106 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Publish release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          name: Yanami Next v${{ needs.validate.outputs.version }}
-          body_path: .github/release-notes/v${{ needs.validate.outputs.version }}.md
-          draft: false
-          prerelease: false
-          make_latest: true
-          fail_on_unmatched_files: true
-          files: release-assets/*
+      - name: Verify complete release asset set
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          mapfile -t ACTUAL < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
+          EXPECTED=(
+            "SHA256SUMS-android.txt"
+            "SHA256SUMS-iphone.txt"
+            "Yanami-Next-v${VERSION}-arm64-v8a.apk"
+            "Yanami-Next-v${VERSION}-armeabi-v7a.apk"
+            "Yanami-Next-v${VERSION}-universal.apk"
+            "Yanami-Next-v${VERSION}-unsigned.ipa"
+          )
+          mapfile -t EXPECTED < <(printf '%s\n' "${EXPECTED[@]}" | sort)
+          test "${#ACTUAL[@]}" -eq "${#EXPECTED[@]}"
+          diff <(printf '%s\n' "${EXPECTED[@]}") <(printf '%s\n' "${ACTUAL[@]}")
+          (
+            cd release-assets
+            sha256sum --check SHA256SUMS-android.txt
+            sha256sum --check SHA256SUMS-iphone.txt
+          )
+
+      - name: Atomically publish verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          RELEASE_ID=""
+          cleanup_failed_draft() {
+            status=$?
+            if [[ "$status" -ne 0 && -n "$RELEASE_ID" ]]; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" >/dev/null 2>&1 || true
+            fi
+            exit "$status"
+          }
+          trap cleanup_failed_draft EXIT
+
+          NOTES="$(cat ".github/release-notes/v${VERSION}.md")"
+          CREATED="$({
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+              --raw-field "tag_name=v${VERSION}" \
+              --raw-field "target_commitish=${GITHUB_SHA}" \
+              --raw-field "name=Yanami Next v${VERSION}" \
+              --raw-field "body=${NOTES}" \
+              --field draft=true \
+              --field prerelease=false \
+              --field generate_release_notes=false
+          })"
+          RELEASE_ID="$(jq -er '.id' <<<"$CREATED")"
+          test "$(jq -r '.draft' <<<"$CREATED")" = "true"
+          test "$(jq -r '.tag_name' <<<"$CREATED")" = "v${VERSION}"
+
+          gh release upload "v${VERSION}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY"
+
+          LOCAL_ASSETS="$({
+            find release-assets -maxdepth 1 -type f -print0 |
+              sort --zero-terminated |
+              while IFS= read -r -d '' asset; do
+                name="$(basename "$asset")"
+                size="$(stat --format='%s' "$asset")"
+                digest="$(sha256sum "$asset" | cut -d ' ' -f 1)"
+                printf '%s\t%s\tsha256:%s\tuploaded\n' "$name" "$size" "$digest"
+              done
+          })"
+
+          ASSETS=""
+          for attempt in {1..10}; do
+            ASSETS="$(
+              gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}/assets" --paginate
+            )"
+            if [[ "$(jq 'length' <<<"$ASSETS")" -eq 6 ]] &&
+              [[ "$(jq '[.[] | select(.state != "uploaded" or (.digest | type) != "string")] | length' <<<"$ASSETS")" -eq 0 ]]; then
+              break
+            fi
+            if [[ "$attempt" -eq 10 ]]; then
+              echo "Release asset digests did not become ready." >&2
+              exit 1
+            fi
+            sleep 3
+          done
+          REMOTE_ASSETS="$({
+            jq -r '.[] | [.name, (.size | tostring), .digest, .state] | @tsv' <<<"$ASSETS" |
+              sort
+          })"
+          diff <(printf '%s\n' "$LOCAL_ASSETS") <(printf '%s\n' "$REMOTE_ASSETS")
+
+          PUBLISHED="$({
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+              --field draft=false \
+              --field prerelease=false \
+              --raw-field make_latest=true
+          })"
+          test "$(jq -r '.draft' <<<"$PUBLISHED")" = "false"
+          test "$(jq -r '.prerelease' <<<"$PUBLISHED")" = "false"
+          test "$(jq -r '.tag_name' <<<"$PUBLISHED")" = "v${VERSION}"
+          test "$(jq -r '.assets | length' <<<"$PUBLISHED")" -eq 6
+          jq -er '.html_url' <<<"$PUBLISHED"
+
+          trap - EXIT

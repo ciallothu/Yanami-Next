@@ -3,7 +3,7 @@ package com.sekusarisu.yanami.domain.model
 /**
  * Aggregate metrics used by the node overview and widget.
  *
- * Speeds and per-refresh traffic describe the current online fleet. Cumulative traffic usage is
+ * Speeds and per-refresh sample usage describe the current online fleet. Cumulative traffic usage is
  * retained by Komari for offline nodes too, so it must include every visible node.
  */
 data class NodeAggregateMetrics(
@@ -13,8 +13,8 @@ data class NodeAggregateMetrics(
         val netOut: Long,
         val trafficUsageUp: Long,
         val trafficUsageDown: Long,
-        val currentTrafficUp: Long,
-        val currentTrafficDown: Long
+        val sampleUsageUp: Long,
+        val sampleUsageDown: Long
 )
 
 fun aggregateNodeMetrics(nodes: List<Node>): NodeAggregateMetrics {
@@ -26,8 +26,8 @@ fun aggregateNodeMetrics(nodes: List<Node>): NodeAggregateMetrics {
             netOut = onlineNodes.saturatingNonNegativeSum { it.netOut },
             trafficUsageUp = nodes.saturatingNonNegativeSum { it.netTotalUp },
             trafficUsageDown = nodes.saturatingNonNegativeSum { it.netTotalDown },
-            currentTrafficUp = onlineNodes.saturatingNonNegativeSum { it.trafficUp },
-            currentTrafficDown = onlineNodes.saturatingNonNegativeSum { it.trafficDown }
+            sampleUsageUp = onlineNodes.saturatingNonNegativeSum { it.trafficUp },
+            sampleUsageDown = onlineNodes.saturatingNonNegativeSum { it.trafficDown }
     )
 }
 

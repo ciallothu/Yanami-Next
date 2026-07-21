@@ -1,6 +1,7 @@
 package com.sekusarisu.yanami.ui.screen.nodedetail
 
 import android.content.Context
+import android.os.SystemClock
 import cafe.adriel.voyager.core.model.screenModelScope
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.data.repository.mergeLatestNodeStatus
@@ -22,6 +23,8 @@ import com.sekusarisu.yanami.ui.screen.isTwoFaHint
 import java.time.Instant
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** 节点详情 ViewModel */
@@ -38,20 +41,23 @@ class NodeDetailViewModel(
         private var wsJob: Job? = null
         private var resumeStreamingJob: Job? = null
         private var seedFetchJob: Job? = null
+        private var latency24hJob: Job? = null
         private var detailLoadJob: Job? = null
         private var detailLoadGeneration = 0L
+        private var lastLatency24hAttemptMillis: Long? = null
         private val realtimeLoadRecordBuffer = ArrayDeque<LoadRecord>(MAX_REALTIME_RECORDS)
         private val realtimeTimeLabelBuffer = ArrayDeque<String>(MAX_REALTIME_RECORDS)
         private val realtimeCpuSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeRamSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeNetInSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeNetOutSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
-        private val realtimeTrafficUpSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
-        private val realtimeTrafficDownSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
+        private val realtimeSampleUsageUpSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
+        private val realtimeSampleUsageDownSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private val realtimeTcpSeriesBuffer = ArrayDeque<Int>(MAX_REALTIME_RECORDS)
         private val realtimeUdpSeriesBuffer = ArrayDeque<Int>(MAX_REALTIME_RECORDS)
         private val realtimeProcessSeriesBuffer = ArrayDeque<Double>(MAX_REALTIME_RECORDS)
         private var isScreenStarted = false
+        private var hasEnteredScreenLifecycle = false
         private var activeStreamServerId: Long? = null
         private var activeStreamRequires2fa = false
         private var activeStreamAuthType = AuthType.PASSWORD
@@ -59,6 +65,8 @@ class NodeDetailViewModel(
         companion object {
                 /** 实时模式最大数据点数（约 4 分钟，每 2 秒一个） */
                 private const val MAX_REALTIME_RECORDS = 120
+                private const val LATENCY_SUMMARY_HOURS = 24
+                private const val LATENCY_SUMMARY_REFRESH_MILLIS = 30_000L
         }
 
         init {
@@ -67,17 +75,20 @@ class NodeDetailViewModel(
 
         fun onScreenStarted() {
                 if (isScreenStarted) return
+                hasEnteredScreenLifecycle = true
                 isScreenStarted = true
                 resumeStreamingIfNeeded()
+                startLatencySummaryRefreshIfNeeded()
         }
 
         fun onScreenStopped() {
-                if (!isScreenStarted) return
                 isScreenStarted = false
                 resumeStreamingJob?.cancel()
                 resumeStreamingJob = null
                 wsJob?.cancel()
                 wsJob = null
+                latency24hJob?.cancel()
+                latency24hJob = null
         }
 
         override fun onEvent(event: NodeDetailContract.Event) {
@@ -130,13 +141,24 @@ class NodeDetailViewModel(
         private fun loadNodeDetail() {
                 val generation = ++detailLoadGeneration
                 detailLoadJob?.cancel()
+                latency24hJob?.cancel()
+                lastLatency24hAttemptMillis = null
                 seedFetchJob?.cancel()
                 seedFetchJob = null
                 resumeStreamingJob?.cancel()
                 resumeStreamingJob = null
                 wsJob?.cancel()
                 wsJob = null
-                setState { copy(isLoading = true, error = null) }
+                setState {
+                        copy(
+                                isLoading = true,
+                                error = null,
+                                latency24hTasks = emptyList(),
+                                latency24hSamplesByTaskId = emptyMap(),
+                                isLatency24hLoading = true,
+                                hasLatency24hError = false
+                        )
+                }
                 val previousNode = currentState.node
                 detailLoadJob = screenModelScope.launch {
                         var activeServerId: Long? = null
@@ -202,6 +224,10 @@ class NodeDetailViewModel(
                                 activeStreamServerId = server.id
                                 activeStreamRequires2fa = server.requires2fa
                                 activeStreamAuthType = server.authType
+
+                                if (isScreenStarted || !hasEnteredScreenLifecycle) {
+                                        startLatencySummaryRefresh(generation)
+                                }
 
                                 // 实时模式（默认）：先拉取最近 1 分钟数据作为图表 seed
                                 if (currentState.selectedLoadHours == 0) {
@@ -276,6 +302,119 @@ class NodeDetailViewModel(
                                 if (isCurrentDetailLoad(generation)) detailLoadJob = null
                         }
                 }
+        }
+
+        /**
+         * Refreshes the fixed 24-hour summary independently from the 2-second detail WebSocket.
+         * The first request is immediate; subsequent requests are throttled to 30 seconds and the
+         * whole job is cancelled when the screen stops.
+         */
+        private fun startLatencySummaryRefresh(generation: Long) {
+                latency24hJob?.cancel()
+                latency24hJob =
+                        screenModelScope.launch {
+                                try {
+                                        var firstRequest = true
+                                        while (firstRequest || isScreenStarted) {
+                                                val now = SystemClock.elapsedRealtime()
+                                                val remainingThrottle =
+                                                        lastLatency24hAttemptMillis?.let { last ->
+                                                            (LATENCY_SUMMARY_REFRESH_MILLIS -
+                                                                            (now - last))
+                                                                    .coerceAtLeast(0L)
+                                                        } ?: 0L
+                                                if (remainingThrottle > 0L) {
+                                                        delay(remainingThrottle)
+                                                }
+                                                lastLatency24hAttemptMillis =
+                                                        SystemClock.elapsedRealtime()
+                                                val server =
+                                                        serverRepository.getActive()
+                                                                ?: return@launch
+                                                if (!isCurrentDetailLoadForServer(
+                                                                generation,
+                                                                server.id
+                                                        )
+                                                ) {
+                                                        return@launch
+                                                }
+                                                try {
+                                                        val sessionToken = ensureSession(server)
+                                                        val history =
+                                                                nodeRepository.getNodePingHistory(
+                                                                        baseUrl = server.baseUrl,
+                                                                        sessionToken = sessionToken,
+                                                                        uuid = uuid,
+                                                                        hours =
+                                                                                LATENCY_SUMMARY_HOURS,
+                                                                        authType = server.authType,
+                                                                        customHeaders =
+                                                                                server.customHeaders
+                                                                                        .toList()
+                                                                )
+                                                        if (!isCurrentDetailLoadForServer(
+                                                                        generation,
+                                                                        server.id
+                                                                )
+                                                        ) {
+                                                                return@launch
+                                                        }
+                                                        setState {
+                                                                copy(
+                                                                        latency24hTasks =
+                                                                                history.tasks,
+                                                                        latency24hSamplesByTaskId =
+                                                                                buildPingSamplesByTaskId(
+                                                                                        history.records
+                                                                                ),
+                                                                        isLatency24hLoading = false,
+                                                                        hasLatency24hError = false
+                                                                )
+                                                        }
+                                                } catch (e: CancellationException) {
+                                                        throw e
+                                                } catch (e: Exception) {
+                                                        if (!isCurrentDetailLoadForServer(
+                                                                        generation,
+                                                                        server.id
+                                                                )
+                                                        ) {
+                                                                return@launch
+                                                        }
+                                                        if (handleSessionExpired(
+                                                                        server.id,
+                                                                        server.requires2fa,
+                                                                        e,
+                                                                        server.authType
+                                                                )
+                                                        ) {
+                                                                return@launch
+                                                        }
+                                                        setState {
+                                                                copy(
+                                                                        latency24hTasks = emptyList(),
+                                                                        latency24hSamplesByTaskId =
+                                                                                emptyMap(),
+                                                                        isLatency24hLoading = false,
+                                                                        hasLatency24hError = true
+                                                                )
+                                                        }
+                                                }
+                                                firstRequest = false
+                                                if (!isScreenStarted) return@launch
+                                                delay(LATENCY_SUMMARY_REFRESH_MILLIS)
+                                        }
+                                } finally {
+                                        if (latency24hJob === currentCoroutineContext()[Job]) {
+                                                latency24hJob = null
+                                        }
+                                }
+                        }
+        }
+
+        private fun startLatencySummaryRefreshIfNeeded() {
+                if (!isScreenStarted || currentState.node == null || latency24hJob != null) return
+                startLatencySummaryRefresh(detailLoadGeneration)
         }
 
         private fun isCurrentDetailLoad(generation: Long): Boolean =
@@ -544,8 +683,8 @@ class NodeDetailViewModel(
                 realtimeRamSeriesBuffer.clear()
                 realtimeNetInSeriesBuffer.clear()
                 realtimeNetOutSeriesBuffer.clear()
-                realtimeTrafficUpSeriesBuffer.clear()
-                realtimeTrafficDownSeriesBuffer.clear()
+                realtimeSampleUsageUpSeriesBuffer.clear()
+                realtimeSampleUsageDownSeriesBuffer.clear()
                 realtimeTcpSeriesBuffer.clear()
                 realtimeUdpSeriesBuffer.clear()
                 realtimeProcessSeriesBuffer.clear()
@@ -557,8 +696,8 @@ class NodeDetailViewModel(
                 realtimeRamSeriesBuffer.addLast(record.ramPercent)
                 realtimeNetInSeriesBuffer.addLast(record.netIn.toDouble())
                 realtimeNetOutSeriesBuffer.addLast(record.netOut.toDouble())
-                realtimeTrafficUpSeriesBuffer.addLast(record.trafficUp.toDouble())
-                realtimeTrafficDownSeriesBuffer.addLast(record.trafficDown.toDouble())
+                realtimeSampleUsageUpSeriesBuffer.addLast(record.trafficUp.toDouble())
+                realtimeSampleUsageDownSeriesBuffer.addLast(record.trafficDown.toDouble())
                 realtimeTcpSeriesBuffer.addLast(record.connections)
                 realtimeUdpSeriesBuffer.addLast(record.connectionsUdp)
                 realtimeProcessSeriesBuffer.addLast(record.process.toDouble())
@@ -570,8 +709,8 @@ class NodeDetailViewModel(
                 realtimeRamSeriesBuffer.removeFirstOrNull()
                 realtimeNetInSeriesBuffer.removeFirstOrNull()
                 realtimeNetOutSeriesBuffer.removeFirstOrNull()
-                realtimeTrafficUpSeriesBuffer.removeFirstOrNull()
-                realtimeTrafficDownSeriesBuffer.removeFirstOrNull()
+                realtimeSampleUsageUpSeriesBuffer.removeFirstOrNull()
+                realtimeSampleUsageDownSeriesBuffer.removeFirstOrNull()
                 realtimeTcpSeriesBuffer.removeFirstOrNull()
                 realtimeUdpSeriesBuffer.removeFirstOrNull()
                 realtimeProcessSeriesBuffer.removeFirstOrNull()
@@ -584,8 +723,8 @@ class NodeDetailViewModel(
                         ramSeries = realtimeRamSeriesBuffer.toList(),
                         netInSeries = realtimeNetInSeriesBuffer.toList(),
                         netOutSeries = realtimeNetOutSeriesBuffer.toList(),
-                        trafficUpSeries = realtimeTrafficUpSeriesBuffer.toList(),
-                        trafficDownSeries = realtimeTrafficDownSeriesBuffer.toList(),
+                        sampleUsageUpSeries = realtimeSampleUsageUpSeriesBuffer.toList(),
+                        sampleUsageDownSeries = realtimeSampleUsageDownSeriesBuffer.toList(),
                         tcpSeries = realtimeTcpSeriesBuffer.toList(),
                         udpSeries = realtimeUdpSeriesBuffer.toList(),
                         processSeries = realtimeProcessSeriesBuffer.toList()
@@ -602,8 +741,8 @@ class NodeDetailViewModel(
                 val ramSeries = ArrayList<Double>(records.size)
                 val netInSeries = ArrayList<Double>(records.size)
                 val netOutSeries = ArrayList<Double>(records.size)
-                val trafficUpSeries = ArrayList<Double>(records.size)
-                val trafficDownSeries = ArrayList<Double>(records.size)
+                val sampleUsageUpSeries = ArrayList<Double>(records.size)
+                val sampleUsageDownSeries = ArrayList<Double>(records.size)
                 val tcpSeries = ArrayList<Int>(records.size)
                 val udpSeries = ArrayList<Int>(records.size)
                 val processSeries = ArrayList<Double>(records.size)
@@ -614,8 +753,8 @@ class NodeDetailViewModel(
                         ramSeries.add(record.ramPercent)
                         netInSeries.add(record.netIn.toDouble())
                         netOutSeries.add(record.netOut.toDouble())
-                        trafficUpSeries.add(record.trafficUp.toDouble())
-                        trafficDownSeries.add(record.trafficDown.toDouble())
+                        sampleUsageUpSeries.add(record.trafficUp.toDouble())
+                        sampleUsageDownSeries.add(record.trafficDown.toDouble())
                         tcpSeries.add(record.connections)
                         udpSeries.add(record.connectionsUdp)
                         processSeries.add(record.process.toDouble())
@@ -627,31 +766,12 @@ class NodeDetailViewModel(
                         ramSeries = ramSeries,
                         netInSeries = netInSeries,
                         netOutSeries = netOutSeries,
-                        trafficUpSeries = trafficUpSeries,
-                        trafficDownSeries = trafficDownSeries,
+                        sampleUsageUpSeries = sampleUsageUpSeries,
+                        sampleUsageDownSeries = sampleUsageDownSeries,
                         tcpSeries = tcpSeries,
                         udpSeries = udpSeries,
                         processSeries = processSeries
                 )
-        }
-
-        private fun buildPingChartByTaskId(
-                records: List<PingRecord>
-        ): Map<Int, NodeDetailContract.PingChartData> {
-                if (records.isEmpty()) {
-                        return emptyMap()
-                }
-
-                return records.groupBy { it.taskId }.mapValues { (_, taskRecords) ->
-                        val sortedRecords = taskRecords.sortedBy { it.time }
-                        val values = ArrayList<Double>(sortedRecords.size)
-                        val times = ArrayList<String>(sortedRecords.size)
-                        sortedRecords.forEach { record ->
-                                values.add(record.value)
-                                times.add(record.time)
-                        }
-                        NodeDetailContract.PingChartData(values = values, times = times)
-                }
         }
 
         private suspend fun ensureSession(
@@ -688,6 +808,7 @@ class NodeDetailViewModel(
                                 isLoading = false,
                                 isLoadRecordsLoading = false,
                                 isPingRecordsLoading = false,
+                                isLatency24hLoading = false,
                                 error = null
                         )
                 }
@@ -710,3 +831,59 @@ class NodeDetailViewModel(
                 return true
         }
 }
+
+/** Loss samples stay in metadata and never become negative latency points on the chart. */
+internal fun buildPingChartByTaskId(
+        records: List<PingRecord>
+): Map<Int, NodeDetailContract.PingChartData> {
+        if (records.isEmpty()) return emptyMap()
+
+        return records.groupBy { it.taskId }.mapValues { (_, taskRecords) ->
+                val sortedRecords = taskRecords.sortedBy { it.time }
+                val successful = sortedRecords.filter { it.value.isFinite() && it.value >= 0.0 }
+                val segments = mutableListOf<NodeDetailContract.PingChartSegment>()
+                val currentXValues = mutableListOf<Double>()
+                val currentValues = mutableListOf<Double>()
+
+                fun flushSegment() {
+                        if (currentValues.isEmpty()) return
+                        segments +=
+                                NodeDetailContract.PingChartSegment(
+                                        xValues = currentXValues.toList(),
+                                        values = currentValues.toList()
+                                )
+                        currentXValues.clear()
+                        currentValues.clear()
+                }
+
+                sortedRecords.forEachIndexed { index, record ->
+                        if (record.value.isFinite() && record.value >= 0.0) {
+                                currentXValues += index.toDouble()
+                                currentValues += record.value
+                        } else {
+                                // Loss and malformed samples terminate the line. Never bridge them.
+                                flushSegment()
+                        }
+                }
+                flushSegment()
+                NodeDetailContract.PingChartData(
+                        values = successful.map { it.value },
+                        times = successful.map { it.time },
+                        segments = segments,
+                        allTimes = sortedRecords.map { it.time },
+                        packetLossXValues =
+                                sortedRecords.mapIndexedNotNull { index, record ->
+                                        index.toDouble().takeIf {
+                                                record.value.isFinite() && record.value < 0.0
+                                        }
+                                },
+                        totalSamples = sortedRecords.count { it.value.isFinite() },
+                        packetLossSamples = sortedRecords.count { it.value.isFinite() && it.value < 0.0 }
+                )
+        }
+}
+
+internal fun buildPingSamplesByTaskId(records: List<PingRecord>): Map<Int, List<Double>> =
+        records.groupBy { it.taskId }.mapValues { (_, taskRecords) ->
+                taskRecords.sortedBy { it.time }.map { it.value }
+        }

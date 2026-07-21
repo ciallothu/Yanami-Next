@@ -105,9 +105,9 @@
     <string name="node_collapse">收起</string>
     <string name="node_traffic_up">上传总流量</string>
     <string name="node_traffic_down">下载总流量</string>
-    <string name="node_net_speed">实时速度</string>
-    <string name="node_net_traffic">流量用量</string>
-    <string name="node_net_interval_traffic">本次流量</string>
+    <string name="node_net_speed">即时流量（速率）</string>
+    <string name="node_net_traffic">累计流量用量</string>
+    <string name="node_net_sample_usage">每次采样用量</string>
     <string name="node_ipv4">IPv4</string>
     <string name="node_ipv6">IPv6</string>
     <string name="settings_mask_ip">隐藏 IP 地址</string>
@@ -244,9 +244,9 @@
     <string name="node_detail_cpu_usage">CPU 使用率</string>
     <string name="node_detail_ram">内存</string>
     <string name="node_detail_disk">磁盘</string>
-    <string name="node_detail_net_speed">网络速度</string>
-    <string name="node_detail_net_traffic">流量用量</string>
-    <string name="node_detail_traffic_limit">流量阈值</string>
+    <string name="node_detail_net_speed">即时网络流量</string>
+    <string name="node_detail_net_traffic">累计流量用量</string>
+    <string name="node_detail_traffic_limit">用量 / 配额</string>
     <string name="node_detail_connections">连接</string>
     <string name="node_detail_process">进程</string>
     <string name="node_detail_load">负载</string>
@@ -260,6 +260,29 @@
     <string name="node_detail_load_failed">加载失败: %s</string>
     <string name="node_detail_records_failed">获取记录失败: %s</string>
     <string name="node_detail_realtime">实时</string>
+    <string name="node_detail_latency_summary_24h">延迟统计（24 小时）</string>
+    <string name="node_detail_server_calculated">服务端统计</string>
+    <string name="node_detail_records_fallback">按真实记录回退统计</string>
+    <string name="node_detail_latency_per_task">逐任务</string>
+    <string name="node_detail_latency_unavailable">暂时无法获取延迟统计</string>
+    <string name="node_detail_latency_no_tasks">该节点未绑定延迟监测任务</string>
+    <string name="node_detail_latency_no_samples">过去 24 小时暂无检测样本</string>
+    <plurals name="node_detail_latency_samples">
+        <item quantity="other">%1$d 次检测</item>
+    </plurals>
+    <plurals name="node_detail_latency_recent_samples">
+        <item quantity="other">最近 %1$d 个真实样本</item>
+    </plurals>
+    <string name="node_detail_latency_sample_legend">柱高为延迟 · 红色为丢包</string>
+    <string name="node_detail_latency_average">平均延迟</string>
+    <string name="node_detail_latency_latest_value">最新：%1$s</string>
+    <string name="node_detail_packet_loss">丢包率</string>
+    <string name="node_detail_latency_fluctuation_value">波动：%1$s</string>
+    <string name="node_detail_latency_min">最低</string>
+    <string name="node_detail_latency_max">最高</string>
+    <string name="node_detail_latency_accessibility">%1$s，平均延迟 %2$s，最新延迟 %3$s，丢包率 %4$s，%5$s，最低 %6$s，P50 %7$s，P99 %8$s，最高 %9$s，波动 %10$s</string>
+    <string name="node_detail_all_samples_lost">所选时段内所有检测均丢包</string>
+    <string name="node_detail_packet_loss_marker">红点表示真实丢包样本</string>
 
     <!-- 设置 -->
     <string name="settings_title">设置</string>

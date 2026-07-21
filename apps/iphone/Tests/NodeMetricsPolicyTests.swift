@@ -62,6 +62,156 @@ enum NodeMetricsPolicyTests {
                 trafficLimitUsedBytes(upload: 9, download: -5, type: "down") == 0,
             "Every traffic-limit mode must clamp negative remote counters"
         )
+        expect(
+            trafficLimitAccountingMode(type: " sum ") == .total &&
+                trafficLimitAccountingMode(type: "MAX") == .maximumDirection &&
+                trafficLimitAccountingMode(type: "min") == .minimumDirection &&
+                trafficLimitAccountingMode(type: "up") == .upload &&
+                trafficLimitAccountingMode(type: "down") == .download,
+            "Traffic-limit labels and calculations must use the same normalized accounting mode"
+        )
+
+        let pingSummary = summarizePingLatency(values: [120, -1, 180, .nan, 60])
+        expect(
+            pingSummary.sampleCount == 4 &&
+                pingSummary.successfulSampleCount == 3 &&
+                pingSummary.lostSampleCount == 1 &&
+                pingSummary.latestMilliseconds == 60 &&
+                pingSummary.averageMilliseconds == 120 &&
+                pingSummary.minimumMilliseconds == 60 &&
+                pingSummary.maximumMilliseconds == 180 &&
+                pingSummary.packetLossPercent == 25,
+            "Negative Komari ping values must count as packet loss and never as latency"
+        )
+        let allLostPingSummary = summarizePingLatency(values: [-1, -1])
+        expect(
+            allLostPingSummary.sampleCount == 2 &&
+                allLostPingSummary.successfulSampleCount == 0 &&
+                allLostPingSummary.latestMilliseconds == nil &&
+                allLostPingSummary.averageMilliseconds == nil &&
+                allLostPingSummary.packetLossPercent == 100,
+            "An all-loss window must show 100% loss without inventing a zero-millisecond latency"
+        )
+        let emptyPingSummary = summarizePingLatency(values: [.infinity, -.infinity, .nan])
+        expect(
+            emptyPingSummary.sampleCount == 0 &&
+                emptyPingSummary.packetLossPercent == nil,
+            "A window without finite records must remain unavailable rather than display 0% loss"
+        )
+        let extremePingSummary = summarizePingLatency(
+            values: [.greatestFiniteMagnitude, .greatestFiniteMagnitude]
+        )
+        expect(
+            extremePingSummary.averageMilliseconds?.isFinite == true,
+            "Hostile finite latency values must not overflow the average"
+        )
+        let resolvedPingMetrics = resolvePingLatencyMetrics(
+            reportedSampleCount: 120,
+            reportedLatestMilliseconds: 205,
+            reportedAverageMilliseconds: 180,
+            reportedPacketLossPercent: 2.5,
+            recordValues: [50, -1]
+        )
+        expect(
+            resolvedPingMetrics == ResolvedPingLatencyMetrics(
+                sampleCount: 120,
+                latestMilliseconds: 205,
+                averageMilliseconds: 180,
+                packetLossPercent: 2.5,
+                hasReportedSuccessfulSamples: true
+            ),
+            "Full-window task statistics must take precedence over downsampled chart records"
+        )
+        let legacyPingMetrics = resolvePingLatencyMetrics(
+            reportedSampleCount: 0,
+            reportedLatestMilliseconds: -1,
+            reportedAverageMilliseconds: 0,
+            reportedPacketLossPercent: nil,
+            recordValues: [40, -1, 80]
+        )
+        expect(
+            legacyPingMetrics.sampleCount == 3 &&
+                legacyPingMetrics.latestMilliseconds == 80 &&
+                legacyPingMetrics.averageMilliseconds == 60 &&
+                abs((legacyPingMetrics.packetLossPercent ?? 0) - (100.0 / 3.0)) < 0.000_001,
+            "Older servers without task totals must fall back to their real record values"
+        )
+        let reportedAllLoss = resolvePingLatencyMetrics(
+            reportedSampleCount: 10,
+            reportedLatestMilliseconds: -1,
+            reportedAverageMilliseconds: 0,
+            reportedPacketLossPercent: 100,
+            recordValues: Array(repeating: -1, count: 10)
+        )
+        expect(
+            reportedAllLoss.latestMilliseconds == nil &&
+                reportedAllLoss.averageMilliseconds == nil &&
+                reportedAllLoss.packetLossPercent == 100 &&
+                !reportedAllLoss.hasReportedSuccessfulSamples,
+            "A reported all-loss task must not expose the server's zero placeholder as latency"
+        )
+        for invalidLoss in [-1.0, 100.1, .infinity, .nan] {
+            let invalidReportedLoss = resolvePingLatencyMetrics(
+                reportedSampleCount: 10,
+                reportedLatestMilliseconds: 1,
+                reportedAverageMilliseconds: 1,
+                reportedPacketLossPercent: invalidLoss,
+                recordValues: [20, -1, 40]
+            )
+            expect(
+                invalidReportedLoss.sampleCount == 3 &&
+                    invalidReportedLoss.latestMilliseconds == 40 &&
+                    invalidReportedLoss.averageMilliseconds == 30 &&
+                    abs((invalidReportedLoss.packetLossPercent ?? 0) - (100.0 / 3.0)) < 0.000_001 &&
+                    !invalidReportedLoss.hasReportedSuccessfulSamples,
+                "Invalid server loss statistics must fall back to real records instead of being clamped"
+            )
+        }
+        let contradictoryAllLoss = resolvePingLatencyMetrics(
+            reportedSampleCount: 10,
+            reportedLatestMilliseconds: 20,
+            reportedAverageMilliseconds: 20,
+            reportedPacketLossPercent: 100,
+            recordValues: [20, -1]
+        )
+        expect(
+            contradictoryAllLoss.sampleCount == 10 &&
+                contradictoryAllLoss.latestMilliseconds == nil &&
+                contradictoryAllLoss.averageMilliseconds == nil &&
+                contradictoryAllLoss.packetLossPercent == 100,
+            "A valid full-window 100% loss statistic must not be contradicted by sampled latency records"
+        )
+        expect(
+            pingLatencySegmentIdentifiers(values: [10, -1, 20]) == [0, nil, 1] &&
+                pingLatencySegmentIdentifiers(values: [-1, 10, 20]) == [nil, 0, 0] &&
+                pingLatencySegmentIdentifiers(values: [-1, -1]) == [nil, nil] &&
+                pingLatencySegmentIdentifiers(values: [10, .nan, 20]) == [0, nil, 1],
+            "Loss and invalid samples must split latency chart lines into real contiguous runs"
+        )
+        let pingRefreshNow = Date(timeIntervalSince1970: 1_000)
+        expect(
+            shouldRefreshNodePingHistory(
+                lastRefreshAt: nil,
+                now: pingRefreshNow,
+                minimumInterval: 30
+            ) &&
+                !shouldRefreshNodePingHistory(
+                    lastRefreshAt: pingRefreshNow.addingTimeInterval(-29),
+                    now: pingRefreshNow,
+                    minimumInterval: 30
+                ) &&
+                shouldRefreshNodePingHistory(
+                    lastRefreshAt: pingRefreshNow.addingTimeInterval(-30),
+                    now: pingRefreshNow,
+                    minimumInterval: 30
+                ) &&
+                shouldRefreshNodePingHistory(
+                    lastRefreshAt: pingRefreshNow.addingTimeInterval(10),
+                    now: pingRefreshNow,
+                    minimumInterval: 30
+                ),
+            "Ping history refreshes must be independently throttled without freezing after a clock correction"
+        )
 
         let serverID = UUID()
         let detailRequest = NodeDetailRequestIdentity(

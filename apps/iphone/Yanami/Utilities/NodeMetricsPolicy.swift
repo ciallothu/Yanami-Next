@@ -5,6 +5,34 @@ struct NodeTrafficUsageTotals: Equatable {
     let download: Int64
 }
 
+enum TrafficLimitAccountingMode: Equatable {
+    case total
+    case maximumDirection
+    case minimumDirection
+    case upload
+    case download
+}
+
+struct PingLatencySummary: Equatable {
+    let sampleCount: Int
+    let successfulSampleCount: Int
+    let lostSampleCount: Int
+    let latestMilliseconds: Double?
+    let averageMilliseconds: Double?
+    let minimumMilliseconds: Double?
+    let maximumMilliseconds: Double?
+    let packetLossPercent: Double?
+}
+
+struct ResolvedPingLatencyMetrics: Equatable {
+    let sampleCount: Int
+    let latestMilliseconds: Double?
+    let averageMilliseconds: Double?
+    let packetLossPercent: Double?
+    /// True only when Komari returned a valid full-window loss statistic with successful samples.
+    let hasReportedSuccessfulSamples: Bool
+}
+
 struct NodeDetailRequestIdentity: Equatable {
     let generation: UInt64
     let serverID: UUID
@@ -62,16 +90,149 @@ func saturatingNonNegativeSum<S: Sequence>(_ values: S) -> Int64 where S.Element
     }
 }
 
+func trafficLimitAccountingMode(type: String) -> TrafficLimitAccountingMode {
+    switch type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "max": return .maximumDirection
+    case "min": return .minimumDirection
+    case "up": return .upload
+    case "down": return .download
+    default: return .total
+    }
+}
+
 func trafficLimitUsedBytes(upload: Int64, download: Int64, type: String) -> Int64 {
     let safeUpload = max(upload, 0)
     let safeDownload = max(download, 0)
-    switch type.lowercased() {
-    case "max": return max(safeUpload, safeDownload)
-    case "min": return min(safeUpload, safeDownload)
-    case "up": return safeUpload
-    case "down": return safeDownload
-    default: return saturatingNonNegativeSum([safeUpload, safeDownload])
+    switch trafficLimitAccountingMode(type: type) {
+    case .maximumDirection: return max(safeUpload, safeDownload)
+    case .minimumDirection: return min(safeUpload, safeDownload)
+    case .upload: return safeUpload
+    case .download: return safeDownload
+    case .total: return saturatingNonNegativeSum([safeUpload, safeDownload])
     }
+}
+
+/// Komari encodes a failed ping as a negative record value. Only finite values are considered;
+/// non-finite transport data is ignored rather than leaking invalid chart coordinates or labels.
+/// A missing packet-loss value means there were no valid records in the selected window, which is
+/// deliberately different from a measured 0% loss rate.
+func summarizePingLatency(values: [Double]) -> PingLatencySummary {
+    let samples = values.filter(\.isFinite)
+    var successfulSampleCount = 0
+    var lostSampleCount = 0
+    var latest: Double?
+    var average = 0.0
+    var minimum: Double?
+    var maximum: Double?
+
+    for value in samples {
+        guard value >= 0 else {
+            lostSampleCount += 1
+            continue
+        }
+        successfulSampleCount += 1
+        // Incremental averaging avoids overflowing an intermediate sum for hostile remote input.
+        average += (value - average) / Double(successfulSampleCount)
+        minimum = min(minimum ?? value, value)
+        maximum = max(maximum ?? value, value)
+        latest = value
+    }
+
+    let packetLossPercent: Double?
+    if samples.isEmpty {
+        packetLossPercent = nil
+    } else {
+        packetLossPercent = Double(lostSampleCount) / Double(samples.count) * 100
+    }
+
+    return PingLatencySummary(
+        sampleCount: samples.count,
+        successfulSampleCount: successfulSampleCount,
+        lostSampleCount: lostSampleCount,
+        latestMilliseconds: latest,
+        averageMilliseconds: successfulSampleCount > 0 ? average : nil,
+        minimumMilliseconds: minimum,
+        maximumMilliseconds: maximum,
+        packetLossPercent: packetLossPercent
+    )
+}
+
+/// Assigns each successful latency sample to a contiguous series. Loss and invalid samples return
+/// `nil` and start a new series, so chart renderers cannot visually bridge a packet-loss gap.
+func pingLatencySegmentIdentifiers(values: [Double]) -> [Int?] {
+    var nextSegment = 0
+    var activeSegment: Int?
+    return values.map { value in
+        guard value.isFinite, value >= 0 else {
+            activeSegment = nil
+            return nil
+        }
+        if activeSegment == nil {
+            activeSegment = nextSegment
+            nextSegment += 1
+        }
+        return activeSegment
+    }
+}
+
+func shouldRefreshNodePingHistory(
+    lastRefreshAt: Date?,
+    now: Date,
+    minimumInterval: TimeInterval
+) -> Bool {
+    guard let lastRefreshAt else { return true }
+    let safeInterval = minimumInterval.isFinite ? max(minimumInterval, 0) : 0
+    let elapsed = now.timeIntervalSince(lastRefreshAt)
+    // A wall-clock correction must not freeze latency refreshes indefinitely.
+    return elapsed < 0 || elapsed >= safeInterval
+}
+
+/// Komari computes task statistics before it downsamples chart records. Prefer that complete-window
+/// result when it is present, and use the returned records only as a compatibility fallback for an
+/// older server. This prevents a visually sampled history from distorting the displayed loss rate.
+func resolvePingLatencyMetrics(
+    reportedSampleCount: Int,
+    reportedLatestMilliseconds: Double?,
+    reportedAverageMilliseconds: Double?,
+    reportedPacketLossPercent: Double?,
+    recordValues: [Double]
+) -> ResolvedPingLatencyMetrics {
+    let summary = summarizePingLatency(values: recordValues)
+    let safeReportedSampleCount = max(reportedSampleCount, 0)
+    let reportedLoss: Double? = {
+        guard safeReportedSampleCount > 0,
+              let value = reportedPacketLossPercent,
+              value.isFinite,
+              (0...100).contains(value) else { return nil }
+        return value
+    }()
+    let hasValidatedReportedWindow = reportedLoss != nil
+    let hasReportedSuccess = reportedLoss.map { $0 < 100 } ?? false
+
+    let latest: Double? = {
+        if reportedLoss == 100 { return nil }
+        guard hasReportedSuccess,
+              let value = reportedLatestMilliseconds,
+              value.isFinite,
+              value >= 0 else { return summary.latestMilliseconds }
+        return value
+    }()
+    let average: Double? = {
+        if reportedLoss == 100 { return nil }
+        guard hasReportedSuccess,
+              let value = reportedAverageMilliseconds,
+              value.isFinite,
+              value >= 0 else { return summary.averageMilliseconds }
+        return value
+    }()
+
+    return ResolvedPingLatencyMetrics(
+        sampleCount: hasValidatedReportedWindow ? safeReportedSampleCount : summary.sampleCount,
+        latestMilliseconds: latest,
+        averageMilliseconds: average,
+        packetLossPercent: reportedLoss ?? summary.packetLossPercent,
+        hasReportedSuccessfulSamples: hasReportedSuccess
+    )
 }
 
 /// A detail response is only safe to publish while every part of its request identity still

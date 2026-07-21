@@ -47,16 +47,20 @@ jobs:
           VERSION="$(tr -d '[:space:]' < VERSION)"
           BUILD_NUMBER="$(tr -d '[:space:]' < VERSION_CODE)"
           test -n "$VERSION"
-          test -n "$BUILD_NUMBER"
+          [[ "$BUILD_NUMBER" =~ ^[0-9]{1,10}$ ]]
           [[ "$VERSION" =~ ^([0-9]+)\.([0-9]{1,2})\.([0-9]{1,2})$ ]]
-          EXPECTED_BUILD_NUMBER="$((
+          BASE_BUILD_NUMBER="$((
             10#${BASH_REMATCH[1]} * 1000000 +
             10#${BASH_REMATCH[2]} * 10000 +
             10#${BASH_REMATCH[3]} * 100
           ))"
-          test "$BUILD_NUMBER" = "$EXPECTED_BUILD_NUMBER"
-          grep -Fq "MARKETING_VERSION = ${VERSION};" apps/iphone/Yanami.xcodeproj/project.pbxproj
-          grep -Fq "CURRENT_PROJECT_VERSION = ${BUILD_NUMBER};" apps/iphone/Yanami.xcodeproj/project.pbxproj
+          BUILD_NUMBER_VALUE="$((10#$BUILD_NUMBER))"
+          test "$BUILD_NUMBER_VALUE" -ge "$BASE_BUILD_NUMBER"
+          test "$BUILD_NUMBER_VALUE" -lt "$((BASE_BUILD_NUMBER + 100))"
+          test "$(grep -Ec '^[[:space:]]*MARKETING_VERSION = ' apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
+          test "$(grep -Fc "MARKETING_VERSION = ${VERSION};" apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
+          test "$(grep -Ec '^[[:space:]]*CURRENT_PROJECT_VERSION = ' apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
+          test "$(grep -Fc "CURRENT_PROJECT_VERSION = ${BUILD_NUMBER};" apps/iphone/Yanami.xcodeproj/project.pbxproj)" -eq 2
           test "$(jq -r '.versionName' docs/update.json)" = "$VERSION"
           test "$(jq -r '.versionCode' docs/update.json)" = "$BUILD_NUMBER"
 

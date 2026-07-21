@@ -171,6 +171,34 @@ class KomariRpcService(private val httpClient: HttpClient) {
         return envelope.data
     }
 
+    /** Fetches the exact server-side Ping window for one node. */
+    suspend fun getNodePingRecords(
+            baseUrl: String,
+            sessionToken: String,
+            uuid: String,
+            hours: Int,
+            authType: AuthType,
+            customHeaders: List<CustomHeader>
+    ): PingRecordsResponseDto {
+        require(uuid.isNotBlank()) { "uuid must not be blank" }
+        require(hours > 0) { "hours must be positive" }
+        val envelope =
+                callRpcHttp(
+                        baseUrl = baseUrl,
+                        sessionToken = sessionToken,
+                        method = "common:getRecords",
+                        params =
+                                buildJsonObject {
+                                    put("uuid", uuid)
+                                    put("type", "ping")
+                                    put("hours", hours)
+                                },
+                        authType = authType,
+                        customHeaders = customHeaders.toList()
+                )
+        return decodeRpcResult(envelope, PingRecordsResponseDto.serializer())
+    }
+
     // ─── WebSocket RPC（通过 HTTP Upgrade 建立 WebSocket 连接）───
 
     sealed interface KomariWsEvent {

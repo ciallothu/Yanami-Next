@@ -354,13 +354,19 @@ struct PingTask: Identifiable, Equatable {
     let id: Int
     let name: String
     let interval: Int
-    let latest: Double
-    let min: Double
-    let max: Double
-    let avg: Double
-    let loss: Double
-    let p50: Double
-    let p99: Double
+    /// Number of samples in the requested window before Komari downsamples chart records.
+    let sampleCount: Int
+    /// Latest successful latency in milliseconds; Komari reports -1 when every sample was lost.
+    let latest: Double?
+    let min: Double?
+    let max: Double?
+    let avg: Double?
+    /// Packet-loss percentage in the requested window (0...100), not a unit fraction.
+    let loss: Double?
+    let p50: Double?
+    let p99: Double?
+    /// Komari's normalized P99–P50 fluctuation score when supported by the server.
+    let p99P50Ratio: Double?
 }
 
 struct PingRecord: Identifiable, Equatable {
@@ -376,6 +382,11 @@ struct NodeDetailState: Equatable {
     var loadRecords: [LoadRecord] = []
     var pingTasks: [PingTask] = []
     var pingRecords: [PingRecord] = []
+    /// Fixed 24-hour data used by the node summary, independent of the interactive chart range.
+    var ping24HourTasks: [PingTask] = []
+    var ping24HourRecords: [PingRecord] = []
+    var ping24HourError: String?
+    var isLoadingPing24Hours = false
     var loadHours = 0
     var pingHours = 1
     var isLoading = false

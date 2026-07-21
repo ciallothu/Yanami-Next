@@ -34,8 +34,8 @@ class NodeAggregateMetricsTest {
         assertEquals(20L, metrics.netOut)
         assertEquals(400L, metrics.trafficUsageUp)
         assertEquals(600L, metrics.trafficUsageDown)
-        assertEquals(3L, metrics.currentTrafficUp)
-        assertEquals(4L, metrics.currentTrafficDown)
+        assertEquals(3L, metrics.sampleUsageUp)
+        assertEquals(4L, metrics.sampleUsageDown)
     }
 
     @Test fun untrustedNegativeAndOverflowingCountersAreSafelyBounded() {
@@ -66,8 +66,8 @@ class NodeAggregateMetricsTest {
         assertEquals(Long.MAX_VALUE, metrics.netOut)
         assertEquals(Long.MAX_VALUE, metrics.trafficUsageUp)
         assertEquals(Long.MAX_VALUE, metrics.trafficUsageDown)
-        assertEquals(Long.MAX_VALUE, metrics.currentTrafficUp)
-        assertEquals(Long.MAX_VALUE, metrics.currentTrafficDown)
+        assertEquals(Long.MAX_VALUE, metrics.sampleUsageUp)
+        assertEquals(Long.MAX_VALUE, metrics.sampleUsageDown)
     }
 
     private fun sampleNode(

@@ -105,9 +105,9 @@
     <string name="node_collapse">Collapse</string>
     <string name="node_traffic_up">Total upload traffic</string>
     <string name="node_traffic_down">Total download traffic</string>
-    <string name="node_net_speed">Speed</string>
-    <string name="node_net_traffic">Traffic Usage</string>
-    <string name="node_net_interval_traffic">Current Traffic</string>
+    <string name="node_net_speed">Live Traffic (rate)</string>
+    <string name="node_net_traffic">Cumulative Usage</string>
+    <string name="node_net_sample_usage">Usage per Sample</string>
     <string name="node_ipv4">IPv4</string>
     <string name="node_ipv6">IPv6</string>
     <string name="settings_mask_ip">Mask IP addresses</string>
@@ -244,9 +244,9 @@
     <string name="node_detail_cpu_usage">CPU Usage</string>
     <string name="node_detail_ram">RAM</string>
     <string name="node_detail_disk">Disk</string>
-    <string name="node_detail_net_speed">Net Speed</string>
-    <string name="node_detail_net_traffic">Traffic Usage</string>
-    <string name="node_detail_traffic_limit">Traffic Limit</string>
+    <string name="node_detail_net_speed">Live Network Traffic</string>
+    <string name="node_detail_net_traffic">Cumulative Usage</string>
+    <string name="node_detail_traffic_limit">Usage / Limit</string>
     <string name="node_detail_connections">Connections</string>
     <string name="node_detail_process">Processes</string>
     <string name="node_detail_load">Load</string>
@@ -260,6 +260,31 @@
     <string name="node_detail_load_failed">Failed to load: %s</string>
     <string name="node_detail_records_failed">Failed to load records: %s</string>
     <string name="node_detail_realtime">Live</string>
+    <string name="node_detail_latency_summary_24h">Latency Statistics (24h)</string>
+    <string name="node_detail_server_calculated">Server-calculated</string>
+    <string name="node_detail_records_fallback">Fallback from real records</string>
+    <string name="node_detail_latency_per_task">Per task</string>
+    <string name="node_detail_latency_unavailable">Latency statistics are temporarily unavailable</string>
+    <string name="node_detail_latency_no_tasks">No latency-monitoring task is bound to this node</string>
+    <string name="node_detail_latency_no_samples">No probe samples in the past 24 hours</string>
+    <plurals name="node_detail_latency_samples">
+        <item quantity="one">%1$d probe</item>
+        <item quantity="other">%1$d probes</item>
+    </plurals>
+    <plurals name="node_detail_latency_recent_samples">
+        <item quantity="one">Latest %1$d real sample</item>
+        <item quantity="other">Latest %1$d real samples</item>
+    </plurals>
+    <string name="node_detail_latency_sample_legend">Height is latency · red is loss</string>
+    <string name="node_detail_latency_average">Average latency</string>
+    <string name="node_detail_latency_latest_value">Latest: %1$s</string>
+    <string name="node_detail_packet_loss">Packet loss</string>
+    <string name="node_detail_latency_fluctuation_value">Fluctuation: %1$s</string>
+    <string name="node_detail_latency_min">Min</string>
+    <string name="node_detail_latency_max">Max</string>
+    <string name="node_detail_latency_accessibility">%1$s, average latency %2$s, latest latency %3$s, packet loss %4$s, %5$s, minimum %6$s, P50 %7$s, P99 %8$s, maximum %9$s, fluctuation %10$s</string>
+    <string name="node_detail_all_samples_lost">Every probe in the selected period was lost</string>
+    <string name="node_detail_packet_loss_marker">Red points are actual packet-loss samples</string>
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>

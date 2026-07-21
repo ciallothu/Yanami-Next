@@ -47,28 +47,35 @@ struct NodeDetailView: View {
                         )
                     }
                     .padding(.vertical, 8)
-                    
-                    if let usage = node.trafficLimitUsage {
-                        ResourceMeter(
-                            title: localized("Traffic Limit"),
-                            value: usage.fraction,
-                            label: "\(Formatters.bytes(usage.used)) / \(Formatters.bytes(node.trafficLimit)) (\(Formatters.percent(usage.fraction * 100, digits: 0)))"
-                        )
-                    }
                 }
 
                 Section("Network") {
                     DetailLine(
-                        localized("Network Speed"),
+                        localized("Traffic"),
                         "↑ \(Formatters.rate(node.netOut))  ↓ \(Formatters.rate(node.netIn))"
                     )
                     DetailLine(
-                        localized("Latest Traffic"),
-                        "↑ \(Formatters.bytes(node.trafficUp))  ↓ \(Formatters.bytes(node.trafficDown))"
-                    )
-                    DetailLine(
-                        localized("Traffic Usage"),
+                        localized("Cumulative Usage"),
                         "↑ \(Formatters.bytes(node.netTotalUp))  ↓ \(Formatters.bytes(node.netTotalDown))"
+                    )
+                    if let usage = node.trafficLimitUsage {
+                        QuotaUsageMeter(
+                            used: usage.used,
+                            limit: node.trafficLimit,
+                            fraction: usage.fraction,
+                            accountingMode: localized(trafficLimitAccountingLabelKey(node.trafficLimitType))
+                        )
+                    }
+                }
+
+                Section("Latency Statistics (24h)") {
+                    Latency24HourSummary(
+                        tasks: store.nodeDetail.ping24HourTasks,
+                        records: store.nodeDetail.ping24HourRecords,
+                        error: store.nodeDetail.ping24HourError,
+                        isLoading: store.nodeDetail.isLoadingPing24Hours,
+                        animationEnabled: store.settings.chartAnimationEnabled,
+                        language: store.settings.language
                     )
                 }
 
@@ -119,7 +126,7 @@ struct NodeDetailView: View {
                             records: store.nodeDetail.loadRecords,
                             animationEnabled: store.settings.chartAnimationEnabled
                         )
-                        TrafficLoadChart(
+                        UsagePerSampleChart(
                             records: store.nodeDetail.loadRecords,
                             animationEnabled: store.settings.chartAnimationEnabled
                         )
@@ -147,28 +154,47 @@ struct NodeDetailView: View {
                     .pickerStyle(.segmented)
                     
                     if !store.nodeDetail.pingTasks.isEmpty {
+                        let recordsByTaskID = Dictionary(
+                            grouping: store.nodeDetail.pingRecords,
+                            by: \.taskId
+                        )
                         ForEach(store.nodeDetail.pingTasks) { task in
                             VStack(alignment: .leading, spacing: 4) {
+                                let taskRecords = recordsByTaskID[task.id] ?? []
+                                let taskStatus = pingTaskStatus(task: task, records: taskRecords)
                                 HStack {
                                     Text(task.name)
                                         .font(.subheadline.bold())
                                     Spacer()
-                                    Text("\(Formatters.number(task.latest))ms / \(Formatters.percent(task.loss))")
+                                    Text(taskStatus)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                        .accessibilityLabel(Text("Latest latency and packet loss"))
+                                        .accessibilityValue(Text(taskStatus))
                                 }
-                                
-                                let taskRecords = store.nodeDetail.pingRecords.filter { $0.taskId == task.id }
-                                if !taskRecords.isEmpty {
+
+                                if taskRecords.contains(where: { $0.value.isFinite && $0.value >= 0 }) {
                                     PingChart(
                                         records: taskRecords,
                                         animationEnabled: store.settings.chartAnimationEnabled
                                     )
                                         .frame(height: 100)
+                                } else {
+                                    Text("No successful ping samples")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .center)
+                                        .padding(.vertical, 8)
                                 }
                             }
                             .padding(.vertical, 4)
                         }
+                    } else if store.nodeDetail.pingHours == 24,
+                              store.nodeDetail.ping24HourError != nil {
+                        Label("Latency data unavailable", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding()
                     } else {
                         Text("No ping tasks")
                             .foregroundStyle(.secondary)
@@ -199,10 +225,17 @@ struct NodeDetailView: View {
             await store.loadNodeDetail(uuid: nodeId)
             await runDetailRefreshLoop()
         }
+        .task(id: pingRefreshTaskID) {
+            await runPingRefreshLoop()
+        }
     }
 
     private var detailRefreshTaskID: String {
         "\(nodeId)-\(store.nodeDetail.loadHours)"
+    }
+
+    private var pingRefreshTaskID: String {
+        "\(nodeId)-\(store.activeServerId?.uuidString ?? "none")-ping"
     }
 
     private func displayedAddress(_ address: String) -> String {
@@ -213,6 +246,31 @@ struct NodeDetailView: View {
         AppLocalization.string(key, language: store.settings.language)
     }
 
+    private func trafficLimitAccountingLabelKey(_ type: String) -> String {
+        switch trafficLimitAccountingMode(type: type) {
+        case .total: return "Total (Upload + Download)"
+        case .maximumDirection: return "Larger Direction"
+        case .minimumDirection: return "Smaller Direction"
+        case .upload: return "Upload Only"
+        case .download: return "Download Only"
+        }
+    }
+
+    private func pingTaskStatus(task: PingTask, records: [PingRecord]) -> String {
+        let metrics = resolvePingLatencyMetrics(
+            reportedSampleCount: task.sampleCount,
+            reportedLatestMilliseconds: task.latest,
+            reportedAverageMilliseconds: task.avg,
+            reportedPacketLossPercent: task.loss,
+            recordValues: records.map(\.value)
+        )
+        let latencyText = metrics.latestMilliseconds.map {
+            "\(Formatters.number($0)) ms"
+        } ?? localized("No latency sample")
+        let lossText = metrics.packetLossPercent.map { Formatters.percent($0) } ?? "—"
+        return "\(latencyText) / \(lossText)"
+    }
+
     private func runDetailRefreshLoop() async {
         while !Task.isCancelled {
             let realtime = store.nodeDetail.loadHours == 0
@@ -221,6 +279,368 @@ struct NodeDetailView: View {
             guard !Task.isCancelled else { return }
             await store.refreshNodeDetailRecords()
         }
+    }
+
+    private func runPingRefreshLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard !Task.isCancelled else { return }
+            await store.refreshNodeDetailPingRecordsIfDue()
+        }
+    }
+}
+
+private struct QuotaUsageMeter: View {
+    let used: Int64
+    let limit: Int64
+    let fraction: Double
+    let accountingMode: String
+
+    private var percent: Double {
+        fraction.isFinite ? max(fraction * 100, 0) : 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Usage / Limit")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(accountingMode)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+            Text("\(Formatters.bytes(used)) / \(Formatters.bytes(limit))")
+                .font(.body.monospacedDigit())
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            ProgressView(value: min(max(fraction.isFinite ? fraction : 0, 0), 1))
+                .tint(fraction > 1 ? .red : .blue)
+            Text(Formatters.percent(percent, digits: 2))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(fraction > 1 ? .red : .secondary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Usage / Limit"))
+        .accessibilityValue(
+            Text("\(Formatters.bytes(used)) / \(Formatters.bytes(limit)), \(Formatters.percent(percent, digits: 2)), \(accountingMode)")
+        )
+    }
+}
+
+private struct Latency24HourSummary: View {
+    let tasks: [PingTask]
+    let records: [PingRecord]
+    let error: String?
+    let isLoading: Bool
+    let animationEnabled: Bool
+    let language: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let error, !error.isEmpty {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Latency data unavailable")
+                            .font(.subheadline.weight(.semibold))
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            if isLoading && tasks.isEmpty {
+                ProgressView("Loading 24-hour latency")
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            } else if tasks.isEmpty && error == nil {
+                Label("No ping tasks assigned to this node", systemImage: "waveform.path.ecg")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            } else {
+                let recordsByTaskID = Dictionary(grouping: records, by: \.taskId)
+                ForEach(tasks) { task in
+                    LatencyTaskSummaryCard(
+                        task: task,
+                        records: recordsByTaskID[task.id] ?? [],
+                        animationEnabled: animationEnabled,
+                        language: language
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct LatencyTaskSummaryCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    let task: PingTask
+    let records: [PingRecord]
+    let animationEnabled: Bool
+    let language: String
+    private let metrics: ResolvedPingLatencyMetrics
+
+    init(
+        task: PingTask,
+        records: [PingRecord],
+        animationEnabled: Bool,
+        language: String
+    ) {
+        self.task = task
+        self.records = records
+        self.animationEnabled = animationEnabled
+        self.language = language
+        self.metrics = resolvePingLatencyMetrics(
+            reportedSampleCount: task.sampleCount,
+            reportedLatestMilliseconds: task.latest,
+            reportedAverageMilliseconds: task.avg,
+            reportedPacketLossPercent: task.loss,
+            recordValues: records.map(\.value)
+        )
+    }
+
+    private var hasSuccessfulReportedSamples: Bool {
+        metrics.hasReportedSuccessfulSamples
+    }
+
+    private var sampleCount: Int {
+        metrics.sampleCount
+    }
+
+    private var averageLatency: Double? {
+        metrics.averageMilliseconds
+    }
+
+    private var latestLatency: Double? {
+        metrics.latestMilliseconds
+    }
+
+    private var packetLoss: Double? {
+        metrics.packetLossPercent
+    }
+
+    private var fluctuation: Double? {
+        guard hasSuccessfulReportedSamples,
+              let ratio = task.p99P50Ratio,
+              ratio.isFinite,
+              ratio >= 0 else { return nil }
+        return ratio
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    taskTitle
+                    Spacer(minLength: 8)
+                    sampleCountLabel
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    taskTitle
+                    sampleCountLabel
+                }
+            }
+
+            if dynamicTypeSize.isAccessibilitySize {
+                metricColumn
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    metricRow
+                    metricColumn
+                }
+            }
+
+            if records.isEmpty {
+                Text("No ping samples in the last 24 hours")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+            } else {
+                LatencyHistoryStrip(
+                    records: records,
+                    animationEnabled: animationEnabled,
+                    language: language
+                )
+            }
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 112), alignment: .leading)],
+                alignment: .leading,
+                spacing: 6
+            ) {
+                if let latestLatency {
+                    pingStatistic("Latest", "\(Formatters.number(latestLatency, digits: 1)) ms")
+                }
+                if hasSuccessfulReportedSamples,
+                   let p50 = task.p50,
+                   p50.isFinite,
+                   p50 >= 0 {
+                    pingStatistic("P50", "\(Formatters.number(p50, digits: 1)) ms")
+                }
+                if hasSuccessfulReportedSamples,
+                   let p99 = task.p99,
+                   p99.isFinite,
+                   p99 >= 0 {
+                    pingStatistic("P99", "\(Formatters.number(p99, digits: 1)) ms")
+                }
+                if let fluctuation {
+                    pingStatistic("Fluctuation", Formatters.number(fluctuation, digits: 2))
+                }
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(nil)
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var taskTitle: some View {
+        Text(task.name)
+            .font(.headline)
+            .lineLimit(2)
+    }
+
+    private var sampleCountLabel: some View {
+        HStack(spacing: 3) {
+            Text("\(sampleCount)")
+            Text("Samples")
+        }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.secondary)
+    }
+
+    private var metricRow: some View {
+        HStack(spacing: 10) {
+            averageLatencyTile
+            packetLossTile
+        }
+    }
+
+    private var metricColumn: some View {
+        VStack(spacing: 10) {
+            averageLatencyTile
+            packetLossTile
+        }
+    }
+
+    private var averageLatencyTile: some View {
+        LatencyMetricTile(
+            title: "Average Latency",
+            value: averageLatency.map { "\(Formatters.number($0, digits: 1)) ms" } ?? "—",
+            systemImage: "timer",
+            color: .orange
+        )
+    }
+
+    private var packetLossTile: some View {
+        LatencyMetricTile(
+            title: "Packet Loss",
+            value: packetLoss.map { Formatters.percent($0) } ?? "—",
+            systemImage: "exclamationmark.arrow.triangle.2.circlepath",
+            color: .red
+        )
+    }
+
+    private func pingStatistic(_ title: String, _ value: String) -> Text {
+        Text(verbatim: "\(AppLocalization.string(title, language: language)) \(value)")
+    }
+}
+
+private struct LatencyMetricTile: View {
+    let title: LocalizedStringKey
+    let value: String
+    let systemImage: String
+    let color: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: systemImage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.weight(.semibold).monospacedDigit())
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(title))
+        .accessibilityValue(Text(value))
+    }
+}
+
+private struct LatencyHistoryStrip: View {
+    let records: [PingRecord]
+    let animationEnabled: Bool
+    let language: String
+
+    private var recentRecords: [PingRecord] {
+        Array(records.suffix(32))
+    }
+
+    private var maximumLatency: Double {
+        let maximum = recentRecords
+            .map(\.value)
+            .filter { $0.isFinite && $0 >= 0 }
+            .max() ?? 1
+        return max(maximum, 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Recent Samples")
+                Spacer()
+                Label("Packet Lost", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(recentRecords) { record in
+                    let isLost = !record.value.isFinite || record.value < 0
+                    Capsule()
+                        .fill(isLost ? Color.red : Color.orange)
+                        .frame(maxWidth: .infinity)
+                        .frame(
+                            height: CGFloat(
+                                isLost
+                                    ? 32
+                                    : max(7, 7 + 25 * min(record.value / maximumLatency, 1))
+                            )
+                        )
+                }
+            }
+            .frame(height: 34, alignment: .bottom)
+            .accessibilityHidden(true)
+        }
+        .chartAnimation(animationEnabled, value: recentRecords)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text("Recent Samples"))
+        .accessibilityValue(Text(historyAccessibilityValue))
+    }
+
+    private var historyAccessibilityValue: String {
+        let summary = summarizePingLatency(values: recentRecords.map(\.value))
+        let loss = summary.packetLossPercent.map { Formatters.percent($0) } ?? "—"
+        return "\(summary.sampleCount) \(AppLocalization.string("Samples", language: language)), \(summary.lostSampleCount) \(AppLocalization.string("Lost", language: language)), \(loss)"
     }
 }
 
@@ -400,14 +820,14 @@ private struct NetworkLoadChart: View {
     }
 }
 
-private struct TrafficLoadChart: View {
+private struct UsagePerSampleChart: View {
     let records: [LoadRecord]
     let animationEnabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             LoadChartHeader(
-                title: "Traffic per Sample",
+                title: "Usage per Sample",
                 systemImage: "chart.bar.xaxis",
                 items: [
                     LoadChartLegendItem(title: "Download", systemImage: "arrow.down", color: .blue),
@@ -420,15 +840,15 @@ private struct TrafficLoadChart: View {
                     if let timestamp = parseISO8601(record.time) {
                         LineMark(
                             x: .value("Time", timestamp),
-                            y: .value("Download Traffic", Double(record.trafficDown)),
-                            series: .value("Metric", "Download Traffic")
+                            y: .value("Download Usage", Double(record.trafficDown)),
+                            series: .value("Metric", "Download Usage")
                         )
                         .foregroundStyle(.blue)
 
                         LineMark(
                             x: .value("Time", timestamp),
-                            y: .value("Upload Traffic", Double(record.trafficUp)),
-                            series: .value("Metric", "Upload Traffic")
+                            y: .value("Upload Usage", Double(record.trafficUp)),
+                            series: .value("Metric", "Upload Usage")
                         )
                         .foregroundStyle(.orange)
                     }
@@ -600,24 +1020,69 @@ private struct LoadPeaks {
 private struct PingChart: View {
     let records: [PingRecord]
     let animationEnabled: Bool
+
+    private struct LatencyPoint: Identifiable {
+        let record: PingRecord
+        let segmentID: Int
+        var id: UUID { record.id }
+    }
+
+    private var latencyPoints: [LatencyPoint] {
+        let segmentIDs = pingLatencySegmentIdentifiers(values: records.map(\.value))
+        return zip(records, segmentIDs).compactMap { record, segmentID in
+            guard let segmentID else { return nil }
+            return LatencyPoint(record: record, segmentID: segmentID)
+        }
+    }
+
+    private var lostRecords: [PingRecord] {
+        records.filter { !$0.value.isFinite || $0.value < 0 }
+    }
     
     var body: some View {
         Chart {
-            ForEach(records) { record in
-                if let timestamp = parseISO8601(record.time) {
+            ForEach(latencyPoints) { point in
+                if let timestamp = parseISO8601(point.record.time) {
                     LineMark(
                         x: .value("Time", timestamp),
-                        y: .value("Latency", record.value)
+                        y: .value("Latency", point.record.value),
+                        series: .value("Latency Segment", point.segmentID)
                     )
                     .foregroundStyle(.orange)
+
+                    PointMark(
+                        x: .value("Time", timestamp),
+                        y: .value("Latency", point.record.value)
+                    )
+                    .foregroundStyle(.orange.opacity(0.65))
+                    .symbolSize(12)
+                }
+            }
+            ForEach(lostRecords) { record in
+                if let timestamp = parseISO8601(record.time) {
+                    PointMark(
+                        x: .value("Time", timestamp),
+                        y: .value("Packet Lost", 0.0)
+                    )
+                    .foregroundStyle(.red)
+                    .symbolSize(26)
                 }
             }
         }
         .chartXAxis(.hidden)
         .chartYAxis {
-            AxisMarks(position: .leading)
+            AxisMarks(position: .leading) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel {
+                    if let latency = value.as(Double.self) {
+                        Text("\(Formatters.number(latency, digits: 0)) ms")
+                    }
+                }
+            }
         }
         .chartAnimation(animationEnabled, value: records)
+        .accessibilityLabel(Text("Ping latency history"))
     }
 }
 

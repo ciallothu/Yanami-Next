@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -16,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,10 +37,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.sekusarisu.yanami.R
 import com.sekusarisu.yanami.domain.model.TrafficLimitUsage
-import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitPercent
+import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitDetail
 import com.sekusarisu.yanami.ui.traffic.formatTrafficLimitTypeLabel
 import java.util.Locale
 
@@ -224,73 +225,50 @@ fun formatUptime(seconds: Long): String {
 }
 
 @Composable
-internal fun TrafficLimitMiniIndicator(
+internal fun TrafficQuotaIndicator(
         usage: TrafficLimitUsage,
         modifier: Modifier = Modifier
 ) {
     val progressColor = getUsageColor(usage.usagePercent)
-    val animatedSweep by animateFloatAsState(
-            targetValue = (usage.usagePercent / 100.0 * 360.0).toFloat().coerceIn(0f, 360f),
+    val animatedProgress by animateFloatAsState(
+            targetValue = (usage.usagePercent / 100.0).toFloat().coerceIn(0f, 1f),
             animationSpec = tween(durationMillis = 600),
-            label = "trafficLimitSweep"
+            label = "trafficQuotaProgress"
     )
 
     Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Bottom,
-            modifier = modifier
+            modifier = modifier.fillMaxWidth()
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp)) {
-            val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-            Canvas(modifier = Modifier.size(42.dp)) {
-                val stroke = 4.dp.toPx()
-                val arcSize = size.width - stroke
-                val topLeft = Offset(stroke / 2f, stroke / 2f)
-                drawArc(
-                        color = trackColor,
-                        startAngle = -90f,
-                        sweepAngle = 360f,
-                        useCenter = false,
-                        topLeft = topLeft,
-                        size = Size(arcSize, arcSize),
-                        style = Stroke(width = stroke, cap = StrokeCap.Round)
-                )
-                drawArc(
-                        color = progressColor,
-                        startAngle = -90f,
-                        sweepAngle = animatedSweep,
-                        useCenter = false,
-                        topLeft = topLeft,
-                        size = Size(arcSize, arcSize),
-                        style = Stroke(width = stroke, cap = StrokeCap.Round)
-                )
-            }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                        text = formatTrafficLimitTypeLabel(usage.type),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
-                        lineHeight = 8.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1
-                )
-                Text(
-                        text = formatTrafficLimitPercent(usage.usagePercent),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        lineHeight = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = progressColor,
-                        maxLines = 1
-                )
-            }
+        Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                    text =
+                            "${stringResource(R.string.node_detail_traffic_limit)} · " +
+                                    formatTrafficLimitTypeLabel(usage.type),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(0.4f),
+                    maxLines = 2
+            )
+            Text(
+                    text = formatTrafficLimitDetail(usage),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(0.6f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End
+            )
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-                text = formatBytes(usage.limit),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+        Spacer(modifier = Modifier.height(3.dp))
+        LinearProgressIndicator(
+                progress = { animatedProgress },
+                modifier = Modifier.fillMaxWidth().height(6.dp),
+                color = progressColor,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
         )
     }
 }

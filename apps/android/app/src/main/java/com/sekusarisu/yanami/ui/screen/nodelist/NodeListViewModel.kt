@@ -397,8 +397,8 @@ class NodeListViewModel(
                     totalNetOut = metrics.netOut,
                     totalTrafficUp = metrics.trafficUsageUp,
                     totalTrafficDown = metrics.trafficUsageDown,
-                    currentTrafficUp = metrics.currentTrafficUp,
-                    currentTrafficDown = metrics.currentTrafficDown
+                    sampleUsageUp = metrics.sampleUsageUp,
+                    sampleUsageDown = metrics.sampleUsageDown
             )
         }
     }

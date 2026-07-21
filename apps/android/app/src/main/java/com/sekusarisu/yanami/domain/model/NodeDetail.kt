@@ -32,7 +32,8 @@ data class PingRecord(
         val taskId: Int,
         val taskName: String,
         val time: String, // ISO 8601
-        val value: Double // ms
+        /** Round-trip latency in milliseconds; a negative value is a packet-loss sample. */
+        val value: Double
 )
 
 /**
@@ -44,11 +45,26 @@ data class PingTask(
         val id: Int,
         val name: String,
         val interval: Int,
-        val latest: Double,
-        val min: Double,
-        val max: Double,
-        val avg: Double,
-        val loss: Double,
-        val p50: Double,
-        val p99: Double
+        val latest: Double?,
+        val min: Double?,
+        val max: Double?,
+        val avg: Double?,
+        /** Packet-loss percentage, or null when neither Komari nor real records can provide it. */
+        val loss: Double?,
+        val p50: Double?,
+        val p99: Double?,
+        /** Number of attempts in the requested server-side window, including packet loss. */
+        val total: Int? = null,
+        /** Komari's server-side `(P99 - P50) / adjusted P50` fluctuation ratio. */
+        val jitterRatio: Double? = null,
+        /** True when this complete summary came directly from Komari. */
+        val statisticsAreServerCalculated: Boolean = true,
+        /** False when neither a complete server summary nor real records are available. */
+        val statisticsAreAvailable: Boolean = true
+)
+
+/** A node-scoped Ping response. Komari filters [tasks] to tasks bound to the requested node. */
+data class NodePingHistory(
+        val tasks: List<PingTask> = emptyList(),
+        val records: List<PingRecord> = emptyList()
 )

@@ -136,23 +136,6 @@ private struct NodeSummaryView: View {
                     systemImage: "arrow.down"
                 )
                 SummaryMetricView(
-                    title: "Latest Traffic",
-                    value: Formatters.bytes(
-                        saturatingNonNegativeSum([store.totalTrafficUp, store.totalTrafficDown])
-                    ),
-                    systemImage: "chart.bar"
-                )
-                SummaryMetricView(
-                    title: "Upload Traffic",
-                    value: Formatters.bytes(store.totalTrafficUp),
-                    systemImage: "arrow.up.circle"
-                )
-                SummaryMetricView(
-                    title: "Download Traffic",
-                    value: Formatters.bytes(store.totalTrafficDown),
-                    systemImage: "arrow.down.circle"
-                )
-                SummaryMetricView(
                     title: "Total Usage",
                     value: Formatters.bytes(
                         saturatingNonNegativeSum([store.totalUsageUp, store.totalUsageDown])
@@ -291,27 +274,31 @@ private struct NodeRowView: View {
                                     .font(.system(size: 10, weight: .bold))
                             }
                             .frame(width: 44, height: 44)
-                            Text("USAGE")
-                                .font(.system(size: 8, weight: .medium))
+                            Text("Usage / Limit")
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .minimumScaleFactor(0.72)
                         }
+                        .frame(width: 56)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Text("Usage / Limit"))
+                        .accessibilityValue(
+                            Text("\(Formatters.bytes(usage.used)) / \(Formatters.bytes(node.trafficLimit)), \(Formatters.percent(usage.fraction * 100, digits: 2))")
+                        )
                     }
                 }
                 .padding(.vertical, 4)
 
                 VStack(spacing: 5) {
                     NodeTransferLine(
-                        title: "Network Speed",
+                        title: "Traffic",
                         upload: Formatters.rate(node.netOut),
                         download: Formatters.rate(node.netIn)
                     )
                     NodeTransferLine(
-                        title: "Latest Traffic",
-                        upload: Formatters.bytes(node.trafficUp),
-                        download: Formatters.bytes(node.trafficDown)
-                    )
-                    NodeTransferLine(
-                        title: "Traffic Usage",
+                        title: "Cumulative Usage",
                         upload: Formatters.bytes(node.netTotalUp),
                         download: Formatters.bytes(node.netTotalDown)
                     )

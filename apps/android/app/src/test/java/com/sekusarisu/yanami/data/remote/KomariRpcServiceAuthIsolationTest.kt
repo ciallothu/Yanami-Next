@@ -18,7 +18,13 @@ class KomariRpcServiceAuthIsolationTest {
 
     @Test
     fun oneShotRpcMethodsRequireExplicitAuthTypeAndHeaders() {
-        listOf("getNodes", "getNodesLatestStatus", "getVersion", "getNodeRecentStatus")
+        listOf(
+                        "getNodes",
+                        "getNodesLatestStatus",
+                        "getVersion",
+                        "getNodeRecentStatus",
+                        "getNodePingRecords"
+                )
                 .forEach { methodName ->
                     val method =
                             KomariRpcService::class.java.declaredMethods.singleOrNull {
